@@ -101,7 +101,7 @@ pub fn weak_axp_check(
     }
 
     let mut has_opposite_completion = false;
-    if is_binary_instance(instance) && instance.len() < usize::BITS as usize {
+    if is_binary_instance(instance) && instance.len() <= 20 {
         let n = instance.len();
         for mask in 0..(1usize << n) {
             let mut completion = vec![0.0; n];

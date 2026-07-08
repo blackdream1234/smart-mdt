@@ -1,10 +1,34 @@
 use super::{accuracy, theorem_table_filter, ResultRow};
 use crate::{
     data::{ColumnMajorMatrix, Dataset},
-    tree::{learn, predict_all, LanguagePolicy, LearnerConfig},
-    Result,
+    explain::extract_axp_deletion,
+    logic::{Backend, LanguageFamily},
+    tree::{learn, predict_all, tree_is_certified, LanguagePolicy, LearnerConfig},
+    Result, SmartMdtError,
 };
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+/// Full benchmark configuration.
+#[derive(Clone, Debug)]
+pub struct BenchmarkConfig {
+    /// Directory containing `.dl8` datasets.
+    pub data_dir: PathBuf,
+    /// Depth values to evaluate.
+    pub depths: Vec<usize>,
+    /// Number of deterministic train/test split repetitions.
+    pub runs: usize,
+    /// Method names to evaluate.
+    pub methods: Vec<String>,
+    /// Output directory.
+    pub output: PathBuf,
+    /// Base random seed.
+    pub seed: u64,
+}
+
 /// Runs a quick deterministic synthetic benchmark and writes CSV artifacts.
 pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
     let rows = vec![
@@ -15,60 +39,264 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
     ];
     let y = vec![0, 0, 1, 1];
     let ds = Dataset::new(ColumnMajorMatrix::from_rows(&rows)?, y)?;
-    run_methods(&ds, output)
+    let methods = default_methods();
+    run_dataset_methods(DatasetRunSpec {
+        dataset_name: "synthetic_quick",
+        ds: &ds,
+        runs: &[0],
+        depths: &[3],
+        methods: &methods,
+        output,
+        seed: 42,
+        measure_times: false,
+    })
 }
-/// Runs certified methods and writes benchmark output tables.
-pub fn run_methods(ds: &Dataset, output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
+
+/// Runs the full recursive `.dl8` dataset benchmark protocol.
+pub fn run_full_benchmark(cfg: &BenchmarkConfig) -> Result<Vec<ResultRow>> {
+    let files = discover_dl8_files(&cfg.data_dir)?;
+    if files.is_empty() {
+        return Err(SmartMdtError::InvalidInput(format!(
+            "no .dl8 files found under {}",
+            cfg.data_dir.display()
+        )));
+    }
+    let mut all_rows = Vec::new();
+    for file in files {
+        let ds = Dataset::from_dl8_like(&file)?;
+        if ds.labels.len() < 2 || ds.features.cols() == 0 {
+            continue;
+        }
+        let name = file
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown.dl8")
+            .to_string();
+        let runs: Vec<usize> = (0..cfg.runs).collect();
+        let mut rows = run_dataset_methods(DatasetRunSpec {
+            dataset_name: &name,
+            ds: &ds,
+            runs: &runs,
+            depths: &cfg.depths,
+            methods: &cfg.methods,
+            output: &cfg.output,
+            seed: cfg.seed,
+            measure_times: true,
+        })?;
+        all_rows.append(&mut rows);
+    }
+    write_all_outputs(&cfg.output, &all_rows)?;
+    Ok(all_rows)
+}
+
+fn default_methods() -> Vec<String> {
+    vec![
+        "unary".into(),
+        "horn".into(),
+        "antihorn".into(),
+        "square2cnf".into(),
+        "best-certified".into(),
+    ]
+}
+
+fn discover_dl8_files(root: &Path) -> Result<Vec<PathBuf>> {
+    fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, out)?;
+            } else if path.extension().and_then(|s| s.to_str()) == Some("dl8") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backend)> {
+    match method {
+        "unary" => Some((
+            LanguagePolicy::UnaryOnly,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
+        )),
+        "horn" => Some((
+            LanguagePolicy::HornOnly,
+            LanguageFamily::Horn,
+            Backend::StructuralHorn,
+        )),
+        "antihorn" => Some((
+            LanguagePolicy::AntiHornOnly,
+            LanguageFamily::AntiHorn,
+            Backend::StructuralAntiHorn,
+        )),
+        "square2cnf" => Some((
+            LanguagePolicy::Square2CnfOnly,
+            LanguageFamily::Square2Cnf,
+            Backend::TwoSat,
+        )),
+        "best-certified" => Some((
+            LanguagePolicy::BestCertifiedPerNode,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
+        )),
+        _ => None,
+    }
+}
+
+struct DatasetRunSpec<'a, P: AsRef<Path>> {
+    dataset_name: &'a str,
+    ds: &'a Dataset,
+    runs: &'a [usize],
+    depths: &'a [usize],
+    methods: &'a [String],
+    output: P,
+    seed: u64,
+    measure_times: bool,
+}
+
+fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Vec<ResultRow>> {
+    let DatasetRunSpec {
+        dataset_name,
+        ds,
+        runs,
+        depths,
+        methods,
+        output,
+        seed,
+        measure_times,
+    } = spec;
     fs::create_dir_all(&output)?;
-    let methods = [
-        ("unary", LanguagePolicy::UnaryOnly),
-        ("horn", LanguagePolicy::HornOnly),
-        ("antihorn", LanguagePolicy::AntiHornOnly),
-        ("square2cnf", LanguagePolicy::Square2CnfOnly),
-        ("best-certified", LanguagePolicy::BestCertifiedPerNode),
-    ];
-    let git_sha = std::process::Command::new("git")
+    let git_sha = git_sha();
+    let mut rows = Vec::new();
+    for &run in runs {
+        let (train, test) = split_train_test(ds, seed.wrapping_add(run as u64))?;
+        for &depth in depths {
+            for method in methods {
+                let Some((policy, declared_family, declared_backend)) = method_policy(method)
+                else {
+                    continue;
+                };
+                let cfg = LearnerConfig {
+                    max_depth: depth,
+                    language_policy: policy,
+                    random_seed: seed.wrapping_add(run as u64),
+                    ..LearnerConfig::default()
+                };
+                let train_start = Instant::now();
+                let tree = learn(&train, &cfg)?;
+                let train_time = if measure_times {
+                    train_start.elapsed().as_secs_f64()
+                } else {
+                    0.0
+                };
+
+                let predict_start = Instant::now();
+                let pred = predict_all(&tree, &test.features);
+                let predict_time = if measure_times {
+                    predict_start.elapsed().as_secs_f64()
+                } else {
+                    0.0
+                };
+
+                let axp_start = Instant::now();
+                let (mean_axp_length, theorem_certified) = if test.features.rows() == 0 {
+                    (0.0, tree_is_certified(&tree))
+                } else {
+                    let limit = test.features.rows().min(8);
+                    let mut total = 0usize;
+                    let mut certified = tree_is_certified(&tree);
+                    for row in 0..limit {
+                        let axp = extract_axp_deletion(&tree, &test.features, row, true);
+                        total += axp.features.len();
+                        certified &= axp.metadata.theorem_certified;
+                    }
+                    (total as f64 / limit as f64, certified)
+                };
+                let axp_time = if measure_times {
+                    axp_start.elapsed().as_secs_f64()
+                } else {
+                    0.0
+                };
+
+                rows.push(ResultRow {
+                    dataset: dataset_name.to_string(),
+                    run,
+                    depth,
+                    method: method.clone(),
+                    accuracy: accuracy(&test.labels, &pred),
+                    train_time,
+                    predict_time,
+                    tree_nodes: tree.nodes(),
+                    leaves: tree.leaves(),
+                    max_depth_reached: tree.depth(),
+                    mean_axp_length,
+                    axp_time,
+                    theorem_certified,
+                    language_family: declared_family,
+                    backend: declared_backend,
+                    git_sha: git_sha.clone(),
+                    config: format!("{:?}", &cfg),
+                });
+            }
+        }
+    }
+    write_all_outputs(output, &rows)?;
+    Ok(rows)
+}
+
+fn split_train_test(ds: &Dataset, seed: u64) -> Result<(Dataset, Dataset)> {
+    let n = ds.labels.len();
+    let mut keyed: Vec<(u64, usize)> = (0..n).map(|i| (mix(seed ^ i as u64), i)).collect();
+    keyed.sort_by_key(|x| x.0);
+    let train_len = ((n as f64) * 0.7).round() as usize;
+    let train_len = train_len.clamp(1, n.saturating_sub(1).max(1));
+    let train_idx: Vec<_> = keyed.iter().take(train_len).map(|x| x.1).collect();
+    let test_idx: Vec<_> = keyed.iter().skip(train_len).map(|x| x.1).collect();
+    Ok((subset(ds, &train_idx)?, subset(ds, &test_idx)?))
+}
+
+fn subset(ds: &Dataset, rows: &[usize]) -> Result<Dataset> {
+    let matrix_rows: Vec<Vec<f64>> = rows
+        .iter()
+        .map(|&i| {
+            (0..ds.features.cols())
+                .map(|j| ds.features.get(i, j as u32))
+                .collect()
+        })
+        .collect();
+    let labels = rows.iter().map(|&i| ds.labels[i]).collect();
+    Dataset::new(ColumnMajorMatrix::from_rows(&matrix_rows)?, labels)
+}
+
+fn mix(mut x: u64) -> u64 {
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+fn git_sha() -> String {
+    std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| "unknown".into())
         .trim()
-        .to_string();
-    let mut rows = Vec::new();
-    for (name, pol) in methods {
-        let cfg = LearnerConfig {
-            language_policy: pol,
-            ..LearnerConfig::default()
-        };
-        let tree = learn(ds, &cfg)?;
-        let pred = predict_all(&tree, &ds.features);
-        let fam = match pol {
-            LanguagePolicy::AntiHornOnly => crate::logic::LanguageFamily::AntiHorn,
-            LanguagePolicy::Square2CnfOnly => crate::logic::LanguageFamily::Square2Cnf,
-            LanguagePolicy::HornOnly => crate::logic::LanguageFamily::Horn,
-            _ => crate::logic::LanguageFamily::Unary,
-        };
-        let backend = match fam {
-            crate::logic::LanguageFamily::AntiHorn => crate::logic::Backend::StructuralAntiHorn,
-            crate::logic::LanguageFamily::Square2Cnf => crate::logic::Backend::TwoSat,
-            _ => crate::logic::Backend::StructuralHorn,
-        };
-        rows.push(ResultRow {
-            method: name.into(),
-            accuracy: accuracy(&ds.labels, &pred),
-            tree_nodes: tree.nodes(),
-            leaves: tree.leaves(),
-            max_depth_reached: tree.depth(),
-            theorem_certified: true,
-            language_family: fam,
-            backend,
-            git_sha: git_sha.clone(),
-            config: format!("{:?}", &cfg),
-        });
-    }
-    write_csv(output.as_ref().join("full_results.csv"), &rows)?;
-    write_csv(output.as_ref().join("summary_by_method.csv"), &rows)?;
+        .to_string()
+}
+
+fn write_all_outputs(output: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
+    fs::create_dir_all(&output)?;
+    write_csv(output.as_ref().join("full_results.csv"), rows)?;
+    write_summary(output.as_ref().join("summary_by_method.csv"), rows)?;
     let cert: Vec<_> = rows
         .iter()
         .filter(|r| theorem_table_filter(r))
@@ -81,28 +309,67 @@ pub fn run_methods(ds: &Dataset, output: impl AsRef<Path>) -> Result<Vec<ResultR
         .cloned()
         .collect();
     write_csv(output.as_ref().join("empirical_results.csv"), &emp)?;
-    write_csv(output.as_ref().join("axp_metadata.csv"), &rows)?;
+    write_csv(output.as_ref().join("axp_metadata.csv"), rows)?;
     write_csv(output.as_ref().join("tuning_diagnostics.csv"), &emp)?;
-    fs::write(output.as_ref().join("README_RESULTS.md"),"# CGS-MDT benchmark results\n\nThe theorem table is filtered to Unary, Horn, AntiHorn and Square2CNF with certified backends only.\n")?;
-    Ok(rows)
+    fs::write(
+        output.as_ref().join("README_RESULTS.md"),
+        format!(
+            "# CGS-MDT benchmark results\n\nRows: {}\n\nThe theorem table is filtered to Unary, Horn, AntiHorn and Square2CNF methods with certified backends only.\n",
+            rows.len()
+        ),
+    )?;
+    Ok(())
 }
+
+fn write_summary(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
+    let mut out = String::from("method,rows,accuracy_mean,tree_nodes_mean,mean_axp_length_mean\n");
+    let mut methods: Vec<String> = rows.iter().map(|r| r.method.clone()).collect();
+    methods.sort();
+    methods.dedup();
+    for method in methods {
+        let selected: Vec<_> = rows.iter().filter(|r| r.method == method).collect();
+        let n = selected.len() as f64;
+        let acc = selected.iter().map(|r| r.accuracy).sum::<f64>() / n;
+        let nodes = selected.iter().map(|r| r.tree_nodes as f64).sum::<f64>() / n;
+        let axp = selected.iter().map(|r| r.mean_axp_length).sum::<f64>() / n;
+        out.push_str(&format!(
+            "{},{},{acc},{nodes},{axp}\n",
+            method,
+            selected.len()
+        ));
+    }
+    fs::write(path, out)?;
+    Ok(())
+}
+
+fn csv_escape(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "'"))
+}
+
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("method,accuracy,tree_nodes,leaves,max_depth_reached,theorem_certified,language_family,backend,git_sha,config\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,git_sha,config\n");
     for r in rows {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{:?},{:?},{},\"{}\"\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{:?},{},{}\n",
+            csv_escape(&r.dataset),
+            r.run,
+            r.depth,
             r.method,
             r.accuracy,
+            r.train_time,
+            r.predict_time,
             r.tree_nodes,
             r.leaves,
             r.max_depth_reached,
+            r.mean_axp_length,
+            r.axp_time,
             r.theorem_certified,
             r.language_family,
             r.backend,
             r.git_sha,
-            r.config.replace('\"', "'")
+            csv_escape(&r.config)
         ));
     }
-    std::fs::write(path, out)?;
+    fs::write(path, out)?;
     Ok(())
 }

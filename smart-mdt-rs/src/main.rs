@@ -1,13 +1,20 @@
 use smart_mdt_rs::{
     data::Dataset,
-    eval::run_quick,
+    eval::{run_full_benchmark, run_quick, BenchmarkConfig},
     tree::serialize::to_json,
     tree::{learn, LanguagePolicy, LearnerConfig},
     Result,
 };
+use std::path::PathBuf;
+
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
 }
+
+fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
+}
+
 fn policy(s: &str) -> LanguagePolicy {
     match s {
         "unary" => LanguagePolicy::UnaryOnly,
@@ -17,6 +24,19 @@ fn policy(s: &str) -> LanguagePolicy {
         _ => LanguagePolicy::BestCertifiedPerNode,
     }
 }
+
+fn parse_usize_list(s: &str) -> Vec<usize> {
+    s.split(',').filter_map(|x| x.trim().parse().ok()).collect()
+}
+
+fn parse_method_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
@@ -38,10 +58,47 @@ fn main() -> Result<()> {
             println!("{}", to_json(&tree)?);
         }
         Some("benchmark") => {
-            let output = arg(&args, "--output")
-                .unwrap_or_else(|| "experiment_artifacts/smart_mdt_rs/".into());
-            let rows = run_quick(output)?;
-            println!("wrote {} benchmark rows", rows.len());
+            let output = PathBuf::from(
+                arg(&args, "--output")
+                    .unwrap_or_else(|| "experiment_artifacts/smart_mdt_rs/".into()),
+            );
+            if has_flag(&args, "--quick") || arg(&args, "--data").is_none() {
+                let rows = run_quick(output)?;
+                println!("wrote {} quick benchmark rows", rows.len());
+            } else {
+                let data_dir = PathBuf::from(arg(&args, "--data").unwrap_or_default());
+                let depths = arg(&args, "--depths")
+                    .map(|s| parse_usize_list(&s))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec![5, 7]);
+                let runs = arg(&args, "--runs")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(10);
+                let methods = arg(&args, "--methods")
+                    .map(|s| parse_method_list(&s))
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| {
+                        vec![
+                            "unary".into(),
+                            "horn".into(),
+                            "antihorn".into(),
+                            "square2cnf".into(),
+                        ]
+                    });
+                let seed = arg(&args, "--seed")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(42);
+                let cfg = BenchmarkConfig {
+                    data_dir,
+                    depths,
+                    runs,
+                    methods,
+                    output,
+                    seed,
+                };
+                let rows = run_full_benchmark(&cfg)?;
+                println!("wrote {} dataset benchmark rows", rows.len());
+            }
         }
         Some("explain") => {
             return Err(smart_mdt_rs::SmartMdtError::InvalidInput(

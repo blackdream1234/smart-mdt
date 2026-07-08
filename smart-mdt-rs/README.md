@@ -11,3 +11,9 @@ cargo test
 cargo run --release -- train --data ../data/car-un.dl8 --method horn --max-depth 5
 cargo run --release -- benchmark --quick
 ```
+
+## Full benchmark
+
+```bash
+cargo run --release -- benchmark --data ../data --depths 5,7 --runs 10 --methods unary,horn,antihorn,square2cnf --output ../rust_results
+```
