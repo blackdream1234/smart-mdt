@@ -19,7 +19,7 @@ pub fn brute_force_sat(n: usize, cnf: &Cnf) -> bool {
     (0..(1usize << n)).any(|m| {
         cnf.iter().all(|cl| {
             cl.iter().any(|&l| {
-                let v = (m >> ((l.abs() as usize) - 1)) & 1 == 1;
+                let v = (m >> ((l.unsigned_abs() as usize) - 1)) & 1 == 1;
                 if l > 0 {
                     v
                 } else {

@@ -157,7 +157,7 @@ impl BitSet {
         }
     }
     fn clear_tail(&mut self) {
-        if self.len % 64 != 0 {
+        if !self.len.is_multiple_of(64) {
             let keep = (1u64 << (self.len % 64)) - 1;
             if let Some(last) = self.blocks.last_mut() {
                 *last &= keep;

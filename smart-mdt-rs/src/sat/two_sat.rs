@@ -1,6 +1,6 @@
 use super::Cnf;
 fn idx(l: i32) -> usize {
-    let v = (l.abs() as usize) - 1;
+    let v = (l.unsigned_abs() as usize) - 1;
     2 * v + if l > 0 { 0 } else { 1 }
 }
 fn neg_idx(i: usize) -> usize {
