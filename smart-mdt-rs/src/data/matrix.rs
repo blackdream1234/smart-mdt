@@ -123,16 +123,16 @@ impl BitSet {
     pub fn count_ones(&self) -> usize {
         self.blocks.iter().map(|b| b.count_ones() as usize).sum()
     }
-    /// Bitwise and.
-    pub fn and(&self, other: &Self) -> Self {
+    /// Bitwise and. Returns a dimension error for mismatched lengths.
+    pub fn and(&self, other: &Self) -> Result<Self> {
         self.zip(other, |a, b| a & b)
     }
-    /// Bitwise or.
-    pub fn or(&self, other: &Self) -> Self {
+    /// Bitwise or. Returns a dimension error for mismatched lengths.
+    pub fn or(&self, other: &Self) -> Result<Self> {
         self.zip(other, |a, b| a | b)
     }
-    /// Bitwise xor.
-    pub fn xor(&self, other: &Self) -> Self {
+    /// Bitwise xor. Returns a dimension error for mismatched lengths.
+    pub fn xor(&self, other: &Self) -> Result<Self> {
         self.zip(other, |a, b| a ^ b)
     }
     /// Bitwise complement within length.
@@ -144,9 +144,11 @@ impl BitSet {
         x.clear_tail();
         x
     }
-    fn zip<F: Fn(u64, u64) -> u64>(&self, other: &Self, f: F) -> Self {
-        assert_eq!(self.len, other.len);
-        Self {
+    fn zip<F: Fn(u64, u64) -> u64>(&self, other: &Self, f: F) -> Result<Self> {
+        if self.len != other.len {
+            return Err(SmartMdtError::Dimension("bitset length mismatch".into()));
+        }
+        Ok(Self {
             len: self.len,
             blocks: self
                 .blocks
@@ -154,7 +156,7 @@ impl BitSet {
                 .zip(&other.blocks)
                 .map(|(a, b)| f(*a, *b))
                 .collect(),
-        }
+        })
     }
     fn clear_tail(&mut self) {
         if !self.len.is_multiple_of(64) {

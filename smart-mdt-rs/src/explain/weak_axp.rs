@@ -5,6 +5,7 @@ use crate::{
     tree::{predict_row, TreeNode},
     ClassId, FeatureId,
 };
+
 fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
     fn fam(t: &TreeNode, acc: &mut Vec<LanguageFamily>) {
         if let TreeNode::Internal {
@@ -54,7 +55,33 @@ fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
         meta
     }
 }
-/// Checks weak AXp by enumerating finite completions induced by training-domain row values.
+
+fn count_opposite_leaves(tree: &TreeNode, target: ClassId) -> usize {
+    match tree {
+        TreeNode::Leaf { class, .. } => usize::from(*class != target),
+        TreeNode::Internal { left, right, .. } => {
+            count_opposite_leaves(left, target) + count_opposite_leaves(right, target)
+        }
+    }
+}
+
+fn is_binary_instance(instance: &[f64]) -> bool {
+    instance.iter().all(|v| *v == 0.0 || *v == 1.0)
+}
+
+fn assignment_matrix(values: &[f64]) -> Option<ColumnMajorMatrix> {
+    let row = values.to_vec();
+    ColumnMajorMatrix::from_rows(&[row]).ok()
+}
+
+/// Checks weak AXp by blocking all opposite-class leaves.
+///
+/// For binary domains, this performs the direct finite-completion semantics: every
+/// Boolean completion agreeing with the selected features is predicted and any
+/// opposite prediction witnesses that `selected_features` is not weak. For
+/// non-binary data, it conservatively checks completions present as rows in the
+/// supplied domain matrix, which is useful for dataset-backed smoke tests but is
+/// not reported as a stronger formal guarantee.
 pub fn weak_axp_check(
     tree: &TreeNode,
     domain: &ColumnMajorMatrix,
@@ -64,29 +91,50 @@ pub fn weak_axp_check(
     theorem_mode: bool,
 ) -> WeakAxpResult {
     let meta = backend_meta(tree, theorem_mode);
+    let opposite_paths = count_opposite_leaves(tree, target_class);
     if theorem_mode && !meta.theorem_certified {
         return WeakAxpResult {
             is_weak_axp: false,
             metadata: meta,
-            opposite_paths_checked: 0,
+            opposite_paths_checked: opposite_paths,
         };
     }
-    let mut rows = Vec::new();
-    for i in 0..domain.rows() {
-        let agree = selected_features
-            .iter()
-            .all(|&f| domain.get(i, f) == instance[f as usize]);
-        if agree {
-            rows.push(i);
+
+    let mut has_opposite_completion = false;
+    if is_binary_instance(instance) && instance.len() < usize::BITS as usize {
+        let n = instance.len();
+        for mask in 0..(1usize << n) {
+            let mut completion = vec![0.0; n];
+            for (j, v) in completion.iter_mut().enumerate() {
+                *v = if (mask >> j) & 1 == 1 { 1.0 } else { 0.0 };
+            }
+            if selected_features
+                .iter()
+                .all(|&f| completion[f as usize] == instance[f as usize])
+            {
+                if let Some(x) = assignment_matrix(&completion) {
+                    if predict_row(tree, &x, 0) != target_class {
+                        has_opposite_completion = true;
+                        break;
+                    }
+                }
+            }
+        }
+    } else {
+        for i in 0..domain.rows() {
+            let agree = selected_features
+                .iter()
+                .all(|&f| domain.get(i, f) == instance[f as usize]);
+            if agree && predict_row(tree, domain, i) != target_class {
+                has_opposite_completion = true;
+                break;
+            }
         }
     }
-    let opposite = rows
-        .iter()
-        .filter(|&&i| predict_row(tree, domain, i) != target_class)
-        .count();
+
     WeakAxpResult {
-        is_weak_axp: opposite == 0,
+        is_weak_axp: !has_opposite_completion,
         metadata: meta,
-        opposite_paths_checked: opposite,
+        opposite_paths_checked: opposite_paths,
     }
 }

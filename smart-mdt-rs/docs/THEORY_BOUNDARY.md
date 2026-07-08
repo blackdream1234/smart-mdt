@@ -6,6 +6,8 @@ Because each binary node uses a true branch `C` and a false branch `¬C`, theore
 
 A subset of features is a weak AXp for instance `v` and prediction `c` when every completion that agrees with `v` on those features still predicts `c`. A subset-minimal AXp is extracted by deletion: start with all features and remove a feature exactly when the remaining set is still a weak AXp.
 
-Weak AXp checking is implemented as path blocking: every opposite-class leaf path must be incompatible with the selected partial assignment. Certified incompatibility is limited to polynomial fragments implemented here: structural Horn, structural AntiHorn and 2-SAT.
+The implementation boundary follows the theorem stated in the seminar: if weak AXp checking for a language is polynomial, AXp extraction follows by the deletion algorithm; if a language is closed under complement and `CSP(L ∪ Asst)` is polynomial, weak AXp checking is polynomial for that language.
 
-Certified result tables may contain only Unary, Horn, AntiHorn and Square2CNF rows with certified backends. Affine, empirical mixed, tuned and fallback methods are excluded. The learner is heuristic and not globally optimal, and this implementation is not formally verified.
+Certified incompatibility is limited to polynomial fragments implemented and tested here: structural Horn, structural AntiHorn and 2-SAT. Certified result tables may contain only Unary, Horn, AntiHorn and Square2CNF rows with certified backends. Affine, empirical mixed, tuned and fallback methods are excluded.
+
+The learner is greedy/heuristic and beam-limited; it is not a global optimizer. The Rust implementation is tested by unit, regression and brute-force tests, but it is not formally verified. The current non-binary weak-AXp path uses dataset-domain completions and must not be described as a full real-valued CSP proof.

@@ -23,6 +23,6 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         )
         && !matches!(
             r.method.as_str(),
-            "affine" | "bestpn" | "empirical-mixed" | "tuned-experimental"
+            "affine" | "bestpn" | "best-certified" | "empirical-mixed" | "tuned-experimental"
         )
 }
