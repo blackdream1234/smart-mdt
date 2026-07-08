@@ -1,0 +1,26 @@
+[package]
+name = "smart-mdt-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Certificate-guided Smart Multivariate Decision Trees"
+license = "MIT"
+
+[lib]
+name = "smart_mdt_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smart-mdt-rs"
+path = "src/main.rs"
+
+[dependencies]
+
+[[bench]]
+name = "split_search"
+harness = false
+[[bench]]
+name = "sat_backends"
+harness = false
+[[bench]]
+name = "axp_extraction"
+harness = false
