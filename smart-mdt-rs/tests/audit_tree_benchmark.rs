@@ -53,11 +53,18 @@ fn theorem_mode_rejects_empirical_and_tuned_policies() {
 #[test]
 fn theorem_filter_requires_allowed_backend_and_method() {
     let base = ResultRow {
+        dataset: "d".into(),
+        run: 0,
+        depth: 1,
         method: "unary".into(),
         accuracy: 1.0,
+        train_time: 0.0,
+        predict_time: 0.0,
         tree_nodes: 1,
         leaves: 1,
         max_depth_reached: 0,
+        mean_axp_length: 0.0,
+        axp_time: 0.0,
         theorem_certified: true,
         language_family: LanguageFamily::Unary,
         backend: Backend::StructuralHorn,
