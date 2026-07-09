@@ -19,6 +19,9 @@ pub struct ResultRow {
     pub backend: Backend,
     pub git_sha: String,
     pub config: String,
+    pub random_state: u64,
+    pub n_runs: usize,
+    pub train_test_split_protocol: String,
 }
 /// True iff row is allowed in theorem-certified table.
 pub fn theorem_table_filter(r: &ResultRow) -> bool {
@@ -36,4 +39,16 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
             r.method.as_str(),
             "affine" | "bestpn" | "best-certified" | "empirical-mixed" | "tuned-experimental"
         )
+}
+
+/// Benchmark warning row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BenchmarkWarning {
+    pub dataset: String,
+    pub run: String,
+    pub depth: String,
+    pub method: String,
+    pub warning_type: String,
+    pub message: String,
+    pub value: String,
 }

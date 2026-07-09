@@ -70,6 +70,9 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         backend: Backend::StructuralHorn,
         git_sha: "abc".into(),
         config: "seed=1".into(),
+        random_state: 1,
+        n_runs: 1,
+        train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
     };
     assert!(theorem_table_filter(&base));
     assert!(!theorem_table_filter(&ResultRow {

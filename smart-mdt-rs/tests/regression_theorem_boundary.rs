@@ -22,6 +22,9 @@ fn theorem_table_excludes_forbidden() {
         backend: Backend::StructuralHorn,
         git_sha: "x".into(),
         config: "{}".into(),
+        random_state: 1,
+        n_runs: 1,
+        train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
     };
     assert!(theorem_table_filter(&good));
     let bad = ResultRow {
