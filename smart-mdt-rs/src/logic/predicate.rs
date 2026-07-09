@@ -1,5 +1,5 @@
 use super::{Backend, CertificateMetadata, LanguageFamily, Literal, PathCertificate};
-use crate::data::ColumnMajorMatrix;
+use crate::{data::ColumnMajorMatrix, FeatureId};
 /// Split predicate with certificate-first metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Predicate {
@@ -11,6 +11,12 @@ pub enum Predicate {
         b: Literal,
         c: Literal,
         d: Literal,
+    },
+    /// Certified Boolean affine predicate: a single GF(2) equation
+    /// `x_i1 ⊕ x_i2 ⊕ ... ⊕ x_ik = rhs` over Boolean literals in canonical feature order.
+    Affine {
+        literals: Vec<Literal>,
+        rhs: bool,
     },
     EmpiricalAffine {
         literals: Vec<Literal>,
@@ -31,6 +37,11 @@ impl Predicate {
                     && (c.eval_value(x.get(row, c.atom.feature))
                         || d.eval_value(x.get(row, d.atom.feature)))
             }
+            Self::Affine { literals, rhs } => {
+                literals.iter().fold(false, |acc, l| {
+                    acc ^ l.eval_value(x.get(row, l.atom.feature))
+                }) == *rhs
+            }
             Self::EmpiricalAffine { literals, parity } => {
                 literals.iter().fold(false, |acc, l| {
                     acc ^ l.eval_value(x.get(row, l.atom.feature))
@@ -45,6 +56,7 @@ impl Predicate {
             Self::HornClause(_) => LanguageFamily::Horn,
             Self::AntiHornClause(_) => LanguageFamily::AntiHorn,
             Self::Square2Cnf { .. } => LanguageFamily::Square2Cnf,
+            Self::Affine { .. } => LanguageFamily::Affine,
             Self::EmpiricalAffine { .. } => LanguageFamily::EmpiricalAffine,
         }
     }
@@ -54,6 +66,7 @@ impl Predicate {
             Self::Unary(_) | Self::HornClause(_) => Backend::StructuralHorn,
             Self::AntiHornClause(_) => Backend::StructuralAntiHorn,
             Self::Square2Cnf { .. } => Backend::TwoSat,
+            Self::Affine { .. } => Backend::Gf2Gaussian,
             Self::EmpiricalAffine { .. } => Backend::Affine,
         }
     }
@@ -63,6 +76,7 @@ impl Predicate {
             Backend::StructuralHorn => PathCertificate::HornCnf,
             Backend::StructuralAntiHorn => PathCertificate::AntiHornCnf,
             Backend::TwoSat => PathCertificate::TwoCnf,
+            Backend::Gf2Gaussian => PathCertificate::AffineGf2,
             Backend::Affine => PathCertificate::Empirical,
             _ => PathCertificate::Unsupported,
         };
@@ -74,7 +88,44 @@ impl Predicate {
             Self::Unary(_) => 1,
             Self::HornClause(v) | Self::AntiHornClause(v) => v.len(),
             Self::Square2Cnf { .. } => 4,
-            Self::EmpiricalAffine { literals, .. } => literals.len(),
+            Self::Affine { literals, .. } | Self::EmpiricalAffine { literals, .. } => {
+                literals.len()
+            }
+        }
+    }
+    /// Distinct feature indices in the predicate scope, in canonical sorted order.
+    pub fn scope_features(&self) -> Vec<FeatureId> {
+        let mut fs: Vec<FeatureId> = match self {
+            Self::Unary(l) => vec![l.atom.feature],
+            Self::HornClause(v) | Self::AntiHornClause(v) => {
+                v.iter().map(|l| l.atom.feature).collect()
+            }
+            Self::Square2Cnf { a, b, c, d } => {
+                vec![
+                    a.atom.feature,
+                    b.atom.feature,
+                    c.atom.feature,
+                    d.atom.feature,
+                ]
+            }
+            Self::Affine { literals, .. } | Self::EmpiricalAffine { literals, .. } => {
+                literals.iter().map(|l| l.atom.feature).collect()
+            }
+        };
+        fs.sort_unstable();
+        fs.dedup();
+        fs
+    }
+    /// Complement of an affine predicate is the same equation with the right-hand
+    /// side flipped; the literal scope and coefficients are unchanged. Returns
+    /// `None` for non-affine predicates, whose complement is expressed as CNF.
+    pub fn affine_complement(&self) -> Option<Predicate> {
+        match self {
+            Self::Affine { literals, rhs } => Some(Self::Affine {
+                literals: literals.clone(),
+                rhs: !rhs,
+            }),
+            _ => None,
         }
     }
 }

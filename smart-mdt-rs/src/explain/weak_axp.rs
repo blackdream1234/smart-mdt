@@ -43,6 +43,12 @@ fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
             crate::logic::Backend::TwoSat,
             crate::logic::PathCertificate::TwoCnf,
         ),
+        LanguageFamily::Affine => CertificateMetadata::new(
+            theorem_mode,
+            f,
+            crate::logic::Backend::Gf2Gaussian,
+            crate::logic::PathCertificate::AffineGf2,
+        ),
         _ => CertificateMetadata::rejected(theorem_mode, f, "empirical path"),
     };
     if theorem_mode && !same {

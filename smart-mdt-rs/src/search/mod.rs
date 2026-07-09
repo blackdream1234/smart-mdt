@@ -1,4 +1,5 @@
 //! Candidate generation and certificate-guided scoring.
+pub mod affine;
 pub mod affine_empirical;
 pub mod antihorn;
 pub mod beam;

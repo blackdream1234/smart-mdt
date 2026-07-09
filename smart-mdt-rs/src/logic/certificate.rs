@@ -5,6 +5,8 @@ pub enum Backend {
     StructuralHorn,
     StructuralAntiHorn,
     TwoSat,
+    /// Certified path satisfiability by Gaussian elimination over GF(2).
+    Gf2Gaussian,
     IntervalDfsFallback,
     PrototypeCaseSplit,
     Affine,
@@ -17,6 +19,8 @@ pub enum PathCertificate {
     HornCnf,
     AntiHornCnf,
     TwoCnf,
+    /// GF(2) linear system solved by Gaussian elimination.
+    AffineGf2,
     Empirical,
     Unsupported,
 }
@@ -41,7 +45,10 @@ impl CertificateMetadata {
         let theorem_certified = language_family.theorem_table_allowed()
             && matches!(
                 backend,
-                Backend::StructuralHorn | Backend::StructuralAntiHorn | Backend::TwoSat
+                Backend::StructuralHorn
+                    | Backend::StructuralAntiHorn
+                    | Backend::TwoSat
+                    | Backend::Gf2Gaussian
             );
         Self {
             theorem_mode,

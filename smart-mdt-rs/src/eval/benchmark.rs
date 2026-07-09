@@ -144,6 +144,11 @@ fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backen
             LanguageFamily::Square2Cnf,
             Backend::TwoSat,
         )),
+        "affine" => Some((
+            LanguagePolicy::AffineOnly,
+            LanguageFamily::Affine,
+            Backend::Gf2Gaussian,
+        )),
         "best-certified" => Some((
             LanguagePolicy::BestCertifiedPerNode,
             LanguageFamily::Unary,
@@ -543,6 +548,7 @@ fn method_label(method: &str) -> &str {
         "horn" => "Horn",
         "antihorn" => "AntiHorn",
         "square2cnf" => "Square2CNF",
+        "affine" => "Affine",
         "best-certified" => "Best certified per node",
         other => other,
     }
@@ -553,6 +559,7 @@ fn path_certificate(backend: Backend) -> &'static str {
         Backend::StructuralHorn => "HornCnf",
         Backend::StructuralAntiHorn => "AntiHornCnf",
         Backend::TwoSat => "TwoCnf",
+        Backend::Gf2Gaussian => "AffineGf2",
         Backend::Affine => "Empirical",
         _ => "Unsupported",
     }

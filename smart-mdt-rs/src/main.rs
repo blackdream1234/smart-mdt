@@ -23,6 +23,7 @@ fn policy(s: &str) -> LanguagePolicy {
         "horn" => LanguagePolicy::HornOnly,
         "antihorn" => LanguagePolicy::AntiHornOnly,
         "square2cnf" => LanguagePolicy::Square2CnfOnly,
+        "affine" => LanguagePolicy::AffineOnly,
         _ => LanguagePolicy::BestCertifiedPerNode,
     }
 }

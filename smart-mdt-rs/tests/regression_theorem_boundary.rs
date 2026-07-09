@@ -27,6 +27,17 @@ fn theorem_table_excludes_forbidden() {
         train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
     };
     assert!(theorem_table_filter(&good));
+
+    // Certified Boolean affine with the GF(2) backend is admitted.
+    let certified_affine = ResultRow {
+        method: "affine".into(),
+        language_family: LanguageFamily::Affine,
+        backend: Backend::Gf2Gaussian,
+        ..good.clone()
+    };
+    assert!(theorem_table_filter(&certified_affine));
+
+    // Empirical affine (family EmpiricalAffine, backend Affine) is excluded.
     let bad = ResultRow {
         method: "affine".into(),
         language_family: LanguageFamily::EmpiricalAffine,
@@ -34,6 +45,16 @@ fn theorem_table_excludes_forbidden() {
         ..good.clone()
     };
     assert!(!theorem_table_filter(&bad));
+
+    // Affine is admitted ONLY with the GF(2) backend: a non-GF(2) backend fails.
+    let affine_wrong_backend = ResultRow {
+        method: "affine".into(),
+        language_family: LanguageFamily::Affine,
+        backend: Backend::TwoSat,
+        ..good.clone()
+    };
+    assert!(!theorem_table_filter(&affine_wrong_backend));
+
     let bad2 = ResultRow {
         method: "bestpn".into(),
         ..good

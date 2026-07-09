@@ -3,8 +3,8 @@ use crate::{
     data::{ColumnMajorMatrix, Dataset},
     logic::LanguageFamily,
     search::{
-        antihorn::generate_antihorn, horn::generate_horn, square2cnf::generate_square2cnf, top_k,
-        unary::generate_unary, SplitCandidate,
+        affine::generate_affine, antihorn::generate_antihorn, horn::generate_horn,
+        square2cnf::generate_square2cnf, top_k, unary::generate_unary, SplitCandidate,
     },
     ClassId, Result, SmartMdtError,
 };
@@ -15,6 +15,7 @@ pub enum LanguagePolicy {
     HornOnly,
     AntiHornOnly,
     Square2CnfOnly,
+    AffineOnly,
     UnaryOnly,
     BestCertifiedPerNode,
     EmpiricalMixed,
@@ -99,6 +100,9 @@ fn candidates(data: &Dataset, cfg: &LearnerConfig) -> Vec<SplitCandidate> {
             cfg.min_samples_leaf,
             cfg.beam_width,
         )),
+        LanguagePolicy::AffineOnly => {
+            xs.extend(generate_affine(data, cfg.min_samples_leaf, cfg.beam_width))
+        }
         LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => {
             xs.extend(generate_unary(data, cfg.min_samples_leaf));
             xs.extend(generate_horn(data, cfg.min_samples_leaf, cfg.beam_width));
@@ -176,6 +180,7 @@ pub fn tree_is_certified(tree: &TreeNode) -> bool {
                     | LanguageFamily::Horn
                     | LanguageFamily::AntiHorn
                     | LanguageFamily::Square2Cnf
+                    | LanguageFamily::Affine
             ) && tree_is_certified(left)
                 && tree_is_certified(right)
         }

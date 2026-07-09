@@ -21,6 +21,11 @@ pub fn complement_cnf(p: &Predicate) -> ComplementCnf {
                 vec![b.negated(), d.negated()],
             ],
         },
-        Predicate::EmpiricalAffine { .. } => ComplementCnf { clauses: vec![] },
+        // The complement of an affine (GF(2)) predicate is another affine equation
+        // with the flipped right-hand side, which is not a bounded CNF for arity >= 3.
+        // Path blocking for the affine family uses the GF(2) backend, so no CNF is emitted.
+        Predicate::Affine { .. } | Predicate::EmpiricalAffine { .. } => {
+            ComplementCnf { clauses: vec![] }
+        }
     }
 }

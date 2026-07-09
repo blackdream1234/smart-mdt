@@ -23,22 +23,23 @@ pub struct ResultRow {
     pub n_runs: usize,
     pub train_test_split_protocol: String,
 }
-/// True iff row is allowed in theorem-certified table.
+/// True iff row is allowed in the theorem-certified table.
+///
+/// Each certified method is bound to its one certified backend. Affine is
+/// admitted only with the GF(2) backend, so empirical affine (family
+/// `EmpiricalAffine`, backend `Affine`) is excluded even though it shares the
+/// `affine` method name.
 pub fn theorem_table_filter(r: &ResultRow) -> bool {
-    r.theorem_certified
-        && matches!(
-            r.method.as_str(),
-            "unary" | "horn" | "antihorn" | "square2cnf"
-        )
-        && r.language_family.theorem_table_allowed()
-        && matches!(
-            r.backend,
-            Backend::StructuralHorn | Backend::StructuralAntiHorn | Backend::TwoSat
-        )
-        && !matches!(
-            r.method.as_str(),
-            "affine" | "bestpn" | "best-certified" | "empirical-mixed" | "tuned-experimental"
-        )
+    if !r.theorem_certified || !r.language_family.theorem_table_allowed() {
+        return false;
+    }
+    match r.method.as_str() {
+        "unary" | "horn" => matches!(r.backend, Backend::StructuralHorn),
+        "antihorn" => matches!(r.backend, Backend::StructuralAntiHorn),
+        "square2cnf" => matches!(r.backend, Backend::TwoSat),
+        "affine" => matches!(r.backend, Backend::Gf2Gaussian),
+        _ => false,
+    }
 }
 
 /// Benchmark warning row.
