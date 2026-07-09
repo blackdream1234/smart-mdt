@@ -2,6 +2,7 @@
 use crate::{
     data::{class_counts, load_dl8_with_metadata, predicate_mask, Dataset},
     logic::{Literal, Predicate, ThresholdAtom, ThresholdOp},
+    search::antihorn::generate_antihorn,
     search::horn::generate_horn,
     search::scoring::{final_score, gini, information_gain, CandidateScore, ScoreWeights},
     Result, SmartMdtError,
@@ -106,14 +107,11 @@ fn generate_diagnostics(
                 .collect();
         }
         "antihorn" => {
-            for i in 0..selected.len() {
-                for j in i + 1..selected.len() {
-                    let ls = vec![selected[i], selected[j]];
-                    if ls.iter().filter(|l| !l.positive).count() <= 1 {
-                        predicates.push(Predicate::AntiHornClause(ls));
-                    }
-                }
-            }
+            return generate_antihorn(ds, 1, beam_width)
+                .into_iter()
+                .take(cap)
+                .map(|c| score_predicate(ds, c.predicate))
+                .collect();
         }
         "square2cnf" => {
             let n = selected.len().min(12);

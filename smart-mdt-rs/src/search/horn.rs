@@ -75,6 +75,7 @@ pub fn generate_horn_with_diagnostics(
     (out, diag)
 }
 
+#[allow(dead_code)]
 pub(crate) fn combine(
     data: &Dataset,
     min_leaf: usize,
