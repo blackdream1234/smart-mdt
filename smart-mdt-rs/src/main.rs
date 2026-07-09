@@ -95,6 +95,7 @@ fn main() -> Result<()> {
                     methods,
                     output,
                     seed,
+                    strict_data_checks: has_flag(&args, "--strict-data-checks"),
                 };
                 let rows = run_full_benchmark(&cfg)?;
                 println!("wrote {} dataset benchmark rows", rows.len());

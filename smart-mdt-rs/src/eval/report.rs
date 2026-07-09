@@ -40,3 +40,15 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
             "affine" | "bestpn" | "best-certified" | "empirical-mixed" | "tuned-experimental"
         )
 }
+
+/// Benchmark warning row.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BenchmarkWarning {
+    pub dataset: String,
+    pub run: String,
+    pub depth: String,
+    pub method: String,
+    pub warning_type: String,
+    pub message: String,
+    pub value: String,
+}
