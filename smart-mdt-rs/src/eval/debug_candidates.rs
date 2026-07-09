@@ -5,6 +5,7 @@ use crate::{
     search::antihorn::generate_antihorn,
     search::horn::generate_horn,
     search::scoring::{final_score, gini, information_gain, CandidateScore, ScoreWeights},
+    search::square2cnf::generate_square2cnf,
     Result, SmartMdtError,
 };
 use std::{
@@ -114,33 +115,11 @@ fn generate_diagnostics(
                 .collect();
         }
         "square2cnf" => {
-            let n = selected.len().min(12);
-            for a in 0..n {
-                for b in a + 1..n {
-                    for c in 0..n {
-                        for d in c + 1..n {
-                            predicates.push(Predicate::Square2Cnf {
-                                a: selected[a],
-                                b: selected[b],
-                                c: selected[c],
-                                d: selected[d],
-                            });
-                            if predicates.len() >= cap {
-                                break;
-                            }
-                        }
-                        if predicates.len() >= cap {
-                            break;
-                        }
-                    }
-                    if predicates.len() >= cap {
-                        break;
-                    }
-                }
-                if predicates.len() >= cap {
-                    break;
-                }
-            }
+            return generate_square2cnf(ds, 1, beam_width)
+                .into_iter()
+                .take(cap)
+                .map(|c| score_predicate(ds, c.predicate))
+                .collect();
         }
         _ => {}
     }
