@@ -32,3 +32,18 @@ cargo run --release -- benchmark \
 The `.dl8` loader treats the first column as the class label and all remaining columns as features. This avoids using a discretized feature as the target column and keeps Rust benchmark accuracy from being inflated by label-column leakage.
 
 For comparison with older Python result files, Rust `full_results.csv` includes both native per-run columns (`method`, `accuracy`, `tree_nodes`, `mean_axp_length`, etc.) and compatibility aliases (`method_key`, `method_label`, `acc`, `size`, `expl`, `axp_backend`, `path_certificate`, `random_state`, `n_runs`, and `train_test_split_protocol`).
+
+## Candidate diagnostics
+
+Use `debug-candidates` to inspect root candidate masks and scores before changing the learner:
+
+```bash
+cargo run --release -- debug-candidates \
+  --data ../data \
+  --dataset tic-tac-toe \
+  --method horn \
+  --top-k 20 \
+  --output ../debug_horn_tictactoe
+```
+
+The command writes `debug_candidates.csv` and `debug_candidate_masks.csv`. These files are intended for Python-parity debugging of candidate generation, predicate semantics, masks, and scores; they do not change the learner.
