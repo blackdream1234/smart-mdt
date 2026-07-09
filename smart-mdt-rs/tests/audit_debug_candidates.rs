@@ -1,6 +1,7 @@
 use smart_mdt_rs::{
     data::Dataset,
     eval::{accuracy, run_debug_candidates, DebugCandidateConfig},
+    search::antihorn::generate_antihorn_with_diagnostics,
     search::horn::generate_horn_with_diagnostics,
     tree::{learn, predict_all, tree_is_certified, LanguagePolicy, LearnerConfig},
 };
@@ -163,6 +164,82 @@ fn horn_debug_and_learner_candidate_generation_agree_on_tic_tac_toe_root() {
     assert!(text.lines().skip(1).any(|line| {
         let cols: Vec<_> = line.split(',').collect();
         // impurity_gain is column 20 in the diagnostics schema.
+        cols.get(19)
+            .and_then(|s| s.parse::<f64>().ok())
+            .is_some_and(|gain| gain > 0.0)
+    }));
+    let _ = fs::remove_dir_all(&c.output);
+}
+
+#[test]
+fn antihorn_learner_uses_non_constant_positive_gain_split_on_toy_fixture() {
+    let ds = Dataset::from_dl8_like("tests/fixtures/antihorn_separable.dl8").unwrap();
+    let (candidates, diag) = generate_antihorn_with_diagnostics(&ds, 1, 32);
+    assert!(diag.candidate_count_after_filtering > 0);
+    assert!(diag.best_gain > 0.0);
+    assert!(candidates
+        .iter()
+        .all(|c| c.left_count + c.right_count == ds.labels.len()));
+    assert!(candidates
+        .iter()
+        .all(|c| c.left_count > 0 || c.right_count > 0));
+
+    let cfg = LearnerConfig {
+        max_depth: 2,
+        min_samples_split: 2,
+        min_samples_leaf: 1,
+        max_candidates_per_node: 64,
+        beam_width: 32,
+        language_policy: LanguagePolicy::AntiHornOnly,
+        theorem_mode: true,
+        random_seed: 42,
+    };
+    let tree = learn(&ds, &cfg).unwrap();
+    let preds = predict_all(&tree, &ds.features);
+    let majority = ds
+        .labels
+        .iter()
+        .filter(|&&y| y == 1)
+        .count()
+        .max(ds.labels.iter().filter(|&&y| y == 0).count()) as f64
+        / ds.labels.len() as f64;
+    assert!(
+        tree.nodes() > 1,
+        "AntiHorn learner produced a constant tree"
+    );
+    assert!(accuracy(&ds.labels, &preds) > majority);
+    assert!(tree_is_certified(&tree));
+}
+
+#[test]
+fn antihorn_debug_candidates_on_tic_tac_toe_are_positive_gain() {
+    let ds = Dataset::from_dl8_like("../data/tic-tac-toe.dl8").unwrap();
+    let (candidates, diag) = generate_antihorn_with_diagnostics(&ds, 1, 32);
+    assert!(diag.candidate_count_after_filtering > 0);
+    assert!(candidates.iter().any(|c| c.score.predictive_gain > 0.0));
+
+    let c = DebugCandidateConfig {
+        data_dir: PathBuf::from("../data"),
+        dataset: "tic-tac-toe".into(),
+        method: "antihorn".into(),
+        depth: 0,
+        node_path: "root".into(),
+        top_k: 20,
+        output: std::env::temp_dir().join(format!(
+            "smart-mdt-debug-tictactoe-antihorn-{}",
+            std::process::id()
+        )),
+        seed: 42,
+        max_candidates_per_node: 128,
+        beam_width: 32,
+    };
+    let _ = fs::remove_dir_all(&c.output);
+    let rows = run_debug_candidates(&c).unwrap();
+    assert!(!rows.is_empty());
+    let text = fs::read_to_string(c.output.join("debug_candidates.csv")).unwrap();
+    assert!(text.lines().skip(1).any(|line| line.contains(",false,")));
+    assert!(text.lines().skip(1).any(|line| {
+        let cols: Vec<_> = line.split(',').collect();
         cols.get(19)
             .and_then(|s| s.parse::<f64>().ok())
             .is_some_and(|gain| gain > 0.0)
