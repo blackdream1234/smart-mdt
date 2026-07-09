@@ -28,3 +28,7 @@ cargo run --release -- benchmark \
 ```
 
 `full_results.csv` contains `dataset`, `run`, `depth`, `method`, accuracy, timing, tree-size, AXp, theorem metadata, git SHA and config columns. `theorem_certified_results.csv` is filtered to only `unary`, `horn`, `antihorn`, and `square2cnf` rows with certified backends.
+
+The `.dl8` loader treats the first column as the class label and all remaining columns as features. This avoids using a discretized feature as the target column and keeps Rust benchmark accuracy from being inflated by label-column leakage.
+
+For comparison with older Python result files, Rust `full_results.csv` includes both native per-run columns (`method`, `accuracy`, `tree_nodes`, `mean_axp_length`, etc.) and compatibility aliases (`method_key`, `method_label`, `acc`, `size`, `expl`, `axp_backend`, `path_certificate`, `random_state`, `n_runs`, and `train_test_split_protocol`).
