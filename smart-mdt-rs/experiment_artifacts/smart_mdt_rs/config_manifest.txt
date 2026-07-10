@@ -1,0 +1,8 @@
+benchmark_mode=quick
+methods=unary,horn,antihorn,square2cnf,best-certified
+dataset=synthetic_quick
+runs=1
+depth=3
+seed=42
+git_sha=cf1e1da
+backend_policy=weak_axp_checks_execute_structural_horn_structural_antihorn_twosat_or_empirical_gf2_before_reporting_metadata

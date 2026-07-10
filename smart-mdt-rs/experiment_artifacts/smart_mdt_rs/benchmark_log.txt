@@ -1,0 +1,5 @@
+command=cargo run --release -- benchmark --quick
+status=ok
+rows=5
+git_sha=cf1e1da
+note=quick smoke benchmark regenerated after backend-executed weak-AXp integration

@@ -1,0 +1,6 @@
+method,rows,accuracy_mean,tree_nodes_mean,mean_axp_length_mean
+antihorn,1,1,3,1
+best-certified,1,1,3,1
+horn,1,0,3,1
+square2cnf,1,0,3,1
+unary,1,1,3,1
