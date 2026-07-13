@@ -1,7 +1,7 @@
 use super::{
     predict_row, BeamSearchDiagnostics, CacheConfig, CachedSubtree, FrontierLeaf, NodeView,
-    PartialTree, PartialTreeState, SearchStateKey, TrainingContext, TrainingDiagnostics, TreeNode,
-    TreeSearchConfig, TreeSearchStrategy,
+    ParallelConfig, PartialTree, PartialTreeState, SearchStateKey, TrainingContext,
+    TrainingDiagnostics, TreeNode, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -40,6 +40,7 @@ pub struct LearnerConfig {
     pub branch_and_bound: BranchAndBoundConfig,
     pub cache: CacheConfig,
     pub tree_search: TreeSearchConfig,
+    pub parallel: ParallelConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -56,6 +57,7 @@ impl Default for LearnerConfig {
             branch_and_bound: BranchAndBoundConfig::default(),
             cache: CacheConfig::default(),
             tree_search: TreeSearchConfig::default(),
+            parallel: ParallelConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -100,12 +102,13 @@ fn candidates(
     if let Some(cached) = context.candidate_pool_cached(state_key) {
         return Ok(cached);
     }
-    let mut generated = context.generate_candidates(
+    let mut generated = context.generate_candidates_parallel(
         node,
         cfg.language_policy,
         cfg.min_samples_leaf,
         candidate_generation_width(cfg),
         &cfg.split_score,
+        &cfg.parallel,
     )?;
     if cfg.language_policy == LanguagePolicy::SmartCertified {
         generated
@@ -213,7 +216,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?}",
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?}",
             cfg.language_policy,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
@@ -221,6 +224,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
             candidate_generation_width(cfg),
             cfg.branch_and_bound,
             cfg.tree_search,
+            cfg.parallel,
         ),
     )
 }

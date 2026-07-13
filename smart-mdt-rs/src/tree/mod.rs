@@ -2,6 +2,7 @@
 pub mod cache;
 pub mod learner;
 pub mod node;
+pub mod parallel;
 pub mod predict;
 pub mod prune;
 pub mod serialize;
@@ -10,6 +11,7 @@ pub mod tree_search;
 pub use cache::*;
 pub use learner::*;
 pub use node::*;
+pub use parallel::*;
 pub use predict::*;
 pub use training::*;
 pub use tree_search::*;

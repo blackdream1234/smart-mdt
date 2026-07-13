@@ -3,7 +3,7 @@
 use super::{
     BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
     CandidatePoolCache, LanguagePolicy, LookaheadCache, NodeStatistics, NodeStatisticsCache,
-    SearchStateKey,
+    ParallelConfig, ParallelDiagnostics, SearchStateKey,
 };
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
@@ -16,6 +16,7 @@ use crate::{
     },
     ClassId, FeatureId, Result,
 };
+use rayon::prelude::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
@@ -53,6 +54,7 @@ pub struct TrainingDiagnostics {
     pub branch_and_bound: BranchAndBoundDiagnostics,
     pub cache: CacheDiagnostics,
     pub beam_search: BeamSearchDiagnostics,
+    pub parallel: ParallelDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -82,6 +84,7 @@ pub struct TrainingContext {
     diagnostics: AtomicTrainingDiagnostics,
     branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
     beam_search_diagnostics: RwLock<BeamSearchDiagnostics>,
+    parallel_diagnostics: RwLock<ParallelDiagnostics>,
 }
 
 impl TrainingContext {
@@ -133,6 +136,7 @@ impl TrainingContext {
             diagnostics: AtomicTrainingDiagnostics::default(),
             branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
             beam_search_diagnostics: RwLock::new(BeamSearchDiagnostics::default()),
+            parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
         }
     }
 
@@ -284,6 +288,11 @@ impl TrainingContext {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            parallel: self
+                .parallel_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
 
@@ -292,6 +301,15 @@ impl TrainingContext {
             .beam_search_diagnostics
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
+    }
+
+    fn record_parallel(&self, update: impl FnOnce(&mut ParallelDiagnostics)) {
+        update(
+            &mut self
+                .parallel_diagnostics
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
     }
 
     pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {
@@ -964,6 +982,91 @@ impl TrainingContext {
             }
         }
         Ok(output)
+    }
+
+    /// Evaluates independent compatible family pools concurrently, then applies
+    /// the same stable total ordering used by serial candidate selection.
+    pub fn generate_candidates_parallel(
+        &self,
+        node: &NodeView,
+        policy: LanguagePolicy,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+        parallel: &ParallelConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let families = generation_policies(policy, node.theory_state);
+        let should_parallel = parallel.enabled
+            && parallel.parallel_candidates
+            && families.len() >= parallel.minimum_parallel_work.max(1);
+        if !should_parallel {
+            self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
+            return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+        }
+
+        let evaluate = || {
+            families
+                .par_iter()
+                .map(|&family| self.generate_candidates(node, family, min_leaf, beam, score_config))
+                .collect::<Vec<_>>()
+        };
+        let (batches, threads) = if let Some(threads) = parallel.threads {
+            match rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .build()
+            {
+                Ok(pool) => (pool.install(evaluate), threads.max(1)),
+                Err(_) => {
+                    self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
+                    return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+                }
+            }
+        } else {
+            (evaluate(), rayon::current_num_threads())
+        };
+
+        let mut output = Vec::new();
+        for batch in batches {
+            output.extend(batch?);
+        }
+        output.sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        self.record_parallel(|diagnostics| {
+            diagnostics.configured_threads = threads;
+            diagnostics.family_tasks += families.len();
+            diagnostics.candidate_batches_parallelized += 1;
+        });
+        Ok(output)
+    }
+}
+
+fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<LanguagePolicy> {
+    match policy {
+        LanguagePolicy::SmartCertified => {
+            let mut policies = vec![LanguagePolicy::UnaryOnly];
+            match state {
+                PathTheoryState::Uncommitted => policies.extend([
+                    LanguagePolicy::HornOnly,
+                    LanguagePolicy::AntiHornOnly,
+                    LanguagePolicy::Square2CnfOnly,
+                    LanguagePolicy::AffineOnly,
+                ]),
+                PathTheoryState::Horn => policies.push(LanguagePolicy::HornOnly),
+                PathTheoryState::AntiHorn => policies.push(LanguagePolicy::AntiHornOnly),
+                PathTheoryState::TwoSat => policies.push(LanguagePolicy::Square2CnfOnly),
+                PathTheoryState::AffineGf2 => policies.push(LanguagePolicy::AffineOnly),
+            }
+            policies
+        }
+        LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => vec![
+            LanguagePolicy::UnaryOnly,
+            LanguagePolicy::HornOnly,
+            LanguagePolicy::AntiHornOnly,
+            LanguagePolicy::Square2CnfOnly,
+        ],
+        LanguagePolicy::EmpiricalMixed | LanguagePolicy::TunedExperimental => {
+            vec![LanguagePolicy::UnaryOnly]
+        }
+        family => vec![family],
     }
 }
 
