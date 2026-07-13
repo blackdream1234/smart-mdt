@@ -1,9 +1,11 @@
 //! Incremental bitset-backed training views and candidate statistics.
 
 use super::{
-    BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
-    CandidatePoolCache, LanguagePolicy, LookaheadCache, NodeStatistics, NodeStatisticsCache,
-    ParallelConfig, ParallelDiagnostics, PruningDiagnostics, SearchStateKey,
+    allocate_family_budgets, AdaptiveLanguageConfig, AdaptiveLanguageDiagnostics,
+    AdaptiveNodeDiagnostics, BeamSearchDiagnostics, BestSubtreeCache, CacheConfig,
+    CacheDiagnostics, CachedSubtree, CandidatePoolCache, FamilyPilotMetrics, LanguagePolicy,
+    LookaheadCache, NodeStatistics, NodeStatisticsCache, ParallelConfig, ParallelDiagnostics,
+    PruningDiagnostics, SearchStateKey,
 };
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
@@ -33,6 +35,16 @@ pub struct NodeView {
     pub theory_state: PathTheoryState,
 }
 
+/// Borrowed controls for one adaptive candidate-generation request.
+pub struct CandidateGenerationConfig<'a> {
+    pub policy: LanguagePolicy,
+    pub min_leaf: usize,
+    pub beam: usize,
+    pub score: &'a SplitScoreConfig,
+    pub parallel: &'a ParallelConfig,
+    pub adaptive: &'a AdaptiveLanguageConfig,
+}
+
 impl NodeView {
     pub fn root(dataset: &Dataset) -> Self {
         Self {
@@ -56,6 +68,7 @@ pub struct TrainingDiagnostics {
     pub beam_search: BeamSearchDiagnostics,
     pub parallel: ParallelDiagnostics,
     pub pruning: PruningDiagnostics,
+    pub adaptive_language: AdaptiveLanguageDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -87,6 +100,7 @@ pub struct TrainingContext {
     beam_search_diagnostics: RwLock<BeamSearchDiagnostics>,
     parallel_diagnostics: RwLock<ParallelDiagnostics>,
     pruning_diagnostics: RwLock<PruningDiagnostics>,
+    adaptive_language_diagnostics: RwLock<AdaptiveLanguageDiagnostics>,
 }
 
 impl TrainingContext {
@@ -140,6 +154,7 @@ impl TrainingContext {
             beam_search_diagnostics: RwLock::new(BeamSearchDiagnostics::default()),
             parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
             pruning_diagnostics: RwLock::new(PruningDiagnostics::default()),
+            adaptive_language_diagnostics: RwLock::new(AdaptiveLanguageDiagnostics::default()),
         }
     }
 
@@ -301,6 +316,11 @@ impl TrainingContext {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            adaptive_language: self
+                .adaptive_language_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
 
@@ -325,6 +345,43 @@ impl TrainingContext {
             .pruning_diagnostics
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
+    }
+
+    pub fn record_selected_tree(&self, tree: &crate::tree::TreeNode) {
+        fn visit(
+            tree: &crate::tree::TreeNode,
+            depth: usize,
+            diagnostics: &mut AdaptiveLanguageDiagnostics,
+        ) {
+            if let crate::tree::TreeNode::Internal {
+                predicate,
+                left,
+                right,
+                ..
+            } = tree
+            {
+                let family = format!("{:?}", predicate.language());
+                *diagnostics
+                    .selected_family_counts
+                    .entry(family.clone())
+                    .or_default() += 1;
+                *diagnostics
+                    .selected_family_counts_by_depth
+                    .entry(depth)
+                    .or_default()
+                    .entry(family)
+                    .or_default() += 1;
+                visit(left, depth + 1, diagnostics);
+                visit(right, depth + 1, diagnostics);
+            }
+        }
+        let mut diagnostics = self
+            .adaptive_language_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.selected_family_counts.clear();
+        diagnostics.selected_family_counts_by_depth.clear();
+        visit(tree, 0, &mut diagnostics);
     }
 
     pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {
@@ -1052,6 +1109,136 @@ impl TrainingContext {
         });
         Ok(output)
     }
+
+    /// Runs a deterministic pilot for every compatible family, allocates an
+    /// exact retained-candidate budget, and preserves per-family diversity.
+    pub fn generate_candidates_adaptive(
+        &self,
+        node: &NodeView,
+        request: CandidateGenerationConfig<'_>,
+    ) -> Result<Vec<SplitCandidate>> {
+        let CandidateGenerationConfig {
+            policy,
+            min_leaf,
+            beam,
+            score: score_config,
+            parallel,
+            adaptive,
+        } = request;
+        if !adaptive.enabled || policy != LanguagePolicy::SmartCertified {
+            return self.generate_candidates_parallel(
+                node,
+                policy,
+                min_leaf,
+                beam,
+                score_config,
+                parallel,
+            );
+        }
+        let policies = generation_policies(policy, node.theory_state);
+        let mut pilot_batches = Vec::with_capacity(policies.len());
+        let mut pilots = Vec::with_capacity(policies.len());
+        for &family_policy in &policies {
+            let mut candidates = self.generate_candidates(
+                node,
+                family_policy,
+                min_leaf,
+                adaptive.pilot_candidates_per_family.max(1),
+                score_config,
+            )?;
+            candidates.sort_by(|left, right| {
+                crate::search::compare_candidates(left, right, score_config)
+            });
+            let top = candidates
+                .iter()
+                .take(adaptive.pilot_candidates_per_family.max(1))
+                .collect::<Vec<_>>();
+            let best_score = top
+                .first()
+                .map_or(0.0, |candidate| candidate.score.final_score);
+            let mean_top_k_score = if top.is_empty() {
+                0.0
+            } else {
+                top.iter()
+                    .map(|candidate| candidate.score.final_score)
+                    .sum::<f64>()
+                    / top.len() as f64
+            };
+            let best_gain = top
+                .iter()
+                .map(|candidate| candidate.score.predictive_gain)
+                .max_by(f64::total_cmp)
+                .unwrap_or(0.0);
+            let score_per_literal = top.first().map_or(0.0, |candidate| {
+                candidate.score.final_score / candidate.predicate.arity().max(1) as f64
+            });
+            let mut masks = BTreeSet::new();
+            for candidate in &candidates {
+                masks.insert(
+                    self.full_predicate_mask(&candidate.predicate)
+                        .words()
+                        .to_vec(),
+                );
+            }
+            let duplicate_mask_rate = if candidates.is_empty() {
+                0.0
+            } else {
+                1.0 - masks.len() as f64 / candidates.len() as f64
+            };
+            pilots.push(FamilyPilotMetrics {
+                family: family_for_policy(family_policy),
+                best_score,
+                mean_top_k_score,
+                best_gain,
+                score_per_literal,
+                generation_cost: candidates.len() as f64
+                    / adaptive.total_candidate_budget.max(1) as f64,
+                duplicate_mask_rate,
+                branch_and_bound_pruning_rate: 0.0,
+                candidates_generated: candidates.len(),
+            });
+            pilot_batches.push(candidates);
+        }
+        let budgets = allocate_family_budgets(adaptive, &pilots);
+        let mut output = Vec::new();
+        let mut generated = 0usize;
+        for ((family_policy, pilot), budget) in
+            policies.iter().copied().zip(pilot_batches).zip(&budgets)
+        {
+            let mut candidates = if budget.final_budget <= pilot.len() {
+                pilot
+            } else {
+                self.generate_candidates(
+                    node,
+                    family_policy,
+                    min_leaf,
+                    beam.max(budget.final_budget),
+                    score_config,
+                )?
+            };
+            generated += candidates.len();
+            candidates.sort_by(|left, right| {
+                crate::search::compare_candidates(left, right, score_config)
+            });
+            candidates.truncate(budget.final_budget);
+            output.extend(candidates);
+        }
+        output.sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        self.adaptive_language_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .nodes
+            .push(AdaptiveNodeDiagnostics {
+                depth: node.depth,
+                theory_state: node.theory_state,
+                compatible_families: pilots.iter().map(|pilot| pilot.family).collect(),
+                pilots,
+                budgets,
+                candidates_generated: generated,
+                candidates_retained: output.len(),
+            });
+        Ok(output)
+    }
 }
 
 fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<LanguagePolicy> {
@@ -1082,6 +1269,17 @@ fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<La
             vec![LanguagePolicy::UnaryOnly]
         }
         family => vec![family],
+    }
+}
+
+fn family_for_policy(policy: LanguagePolicy) -> crate::logic::LanguageFamily {
+    match policy {
+        LanguagePolicy::UnaryOnly => crate::logic::LanguageFamily::Unary,
+        LanguagePolicy::HornOnly => crate::logic::LanguageFamily::Horn,
+        LanguagePolicy::AntiHornOnly => crate::logic::LanguageFamily::AntiHorn,
+        LanguagePolicy::Square2CnfOnly => crate::logic::LanguageFamily::Square2Cnf,
+        LanguagePolicy::AffineOnly => crate::logic::LanguageFamily::Affine,
+        _ => crate::logic::LanguageFamily::SmartCertified,
     }
 }
 

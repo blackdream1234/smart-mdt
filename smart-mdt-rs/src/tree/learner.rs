@@ -1,8 +1,8 @@
 use super::{
-    deterministic_pruning_split, predict_row, prune_with_validation, BeamSearchDiagnostics,
-    CacheConfig, CachedSubtree, FrontierLeaf, NodeView, ParallelConfig, PartialTree,
-    PartialTreeState, PruningConfig, SearchStateKey, TrainingContext, TrainingDiagnostics,
-    TreeNode, TreeSearchConfig, TreeSearchStrategy,
+    deterministic_pruning_split, predict_row, prune_with_validation, AdaptiveLanguageConfig,
+    BeamSearchDiagnostics, CacheConfig, CachedSubtree, CandidateGenerationConfig, FrontierLeaf,
+    NodeView, ParallelConfig, PartialTree, PartialTreeState, PruningConfig, SearchStateKey,
+    TrainingContext, TrainingDiagnostics, TreeNode, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -43,6 +43,7 @@ pub struct LearnerConfig {
     pub tree_search: TreeSearchConfig,
     pub parallel: ParallelConfig,
     pub pruning: PruningConfig,
+    pub adaptive_language: AdaptiveLanguageConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -61,6 +62,7 @@ impl Default for LearnerConfig {
             tree_search: TreeSearchConfig::default(),
             parallel: ParallelConfig::default(),
             pruning: PruningConfig::default(),
+            adaptive_language: AdaptiveLanguageConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -113,6 +115,7 @@ pub fn learn_with_diagnostics(
     } else {
         grown_tree
     };
+    context.record_selected_tree(&tree);
     Ok((tree, context.diagnostics()))
 }
 fn candidates(
@@ -124,13 +127,16 @@ fn candidates(
     if let Some(cached) = context.candidate_pool_cached(state_key) {
         return Ok(cached);
     }
-    let mut generated = context.generate_candidates_parallel(
+    let mut generated = context.generate_candidates_adaptive(
         node,
-        cfg.language_policy,
-        cfg.min_samples_leaf,
-        candidate_generation_width(cfg),
-        &cfg.split_score,
-        &cfg.parallel,
+        CandidateGenerationConfig {
+            policy: cfg.language_policy,
+            min_leaf: cfg.min_samples_leaf,
+            beam: candidate_generation_width(cfg),
+            score: &cfg.split_score,
+            parallel: &cfg.parallel,
+            adaptive: &cfg.adaptive_language,
+        },
     )?;
     if cfg.language_policy == LanguagePolicy::SmartCertified {
         generated
@@ -238,7 +244,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?}",
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?}",
             cfg.language_policy,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
@@ -248,6 +254,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
             cfg.tree_search,
             cfg.parallel,
             cfg.pruning,
+            cfg.adaptive_language,
         ),
     )
 }
