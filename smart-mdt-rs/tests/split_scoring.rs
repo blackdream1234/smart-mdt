@@ -79,7 +79,8 @@ fn score_is_deterministic_and_components_sum_exactly() {
         - first.family_penalty
         - first.fragmentation_penalty
         - first.estimated_subtree_penalty
-        - first.instability_penalty;
+        - first.instability_penalty
+        - first.axp_rerank_penalty;
     assert!((sum - first.final_score).abs() < 1e-15);
     assert_eq!(first.certificate_bonus, 0.0);
 }

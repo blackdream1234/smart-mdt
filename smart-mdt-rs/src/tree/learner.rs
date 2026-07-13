@@ -1,8 +1,9 @@
 use super::{
     deterministic_pruning_split, predict_row, prune_with_validation, AdaptiveLanguageConfig,
-    BeamSearchDiagnostics, CacheConfig, CachedSubtree, CandidateGenerationConfig, FrontierLeaf,
-    NodeView, ParallelConfig, PartialTree, PartialTreeState, PruningConfig, SearchStateKey,
-    TrainingContext, TrainingDiagnostics, TreeNode, TreeSearchConfig, TreeSearchStrategy,
+    AxpRerankConfig, BeamSearchDiagnostics, CacheConfig, CachedSubtree, CandidateGenerationConfig,
+    FrontierLeaf, NodeView, ParallelConfig, PartialTree, PartialTreeState, PruningConfig,
+    SearchStateKey, TrainingContext, TrainingDiagnostics, TreeNode, TreeSearchConfig,
+    TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -44,6 +45,7 @@ pub struct LearnerConfig {
     pub parallel: ParallelConfig,
     pub pruning: PruningConfig,
     pub adaptive_language: AdaptiveLanguageConfig,
+    pub axp_rerank: AxpRerankConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -63,6 +65,7 @@ impl Default for LearnerConfig {
             parallel: ParallelConfig::default(),
             pruning: PruningConfig::default(),
             adaptive_language: AdaptiveLanguageConfig::default(),
+            axp_rerank: AxpRerankConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -142,6 +145,13 @@ fn candidates(
         generated
             .retain(|candidate| candidate_is_compatible(node.theory_state, &candidate.predicate));
     }
+    generated = context.rerank_candidates_by_axp(
+        node,
+        generated,
+        &cfg.split_score,
+        &cfg.axp_rerank,
+        cfg.random_seed,
+    )?;
     let mut branch_config = cfg.branch_and_bound.clone();
     branch_config.top_k = if branch_config.enabled {
         branch_config.top_k.min(cfg.max_candidates_per_node)
@@ -244,7 +254,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?}",
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?};axp={:?}",
             cfg.language_policy,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
@@ -255,6 +265,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
             cfg.parallel,
             cfg.pruning,
             cfg.adaptive_language,
+            cfg.axp_rerank,
         ),
     )
 }

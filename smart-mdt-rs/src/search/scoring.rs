@@ -115,6 +115,8 @@ pub struct CandidateScore {
     pub fragmentation_penalty: f64,
     pub estimated_subtree_penalty: f64,
     pub instability_penalty: f64,
+    /// Optional shortlist-only certified AXp penalty.
+    pub axp_rerank_penalty: f64,
     // Compatibility aliases retained for existing diagnostics consumers.
     pub complexity_penalty: f64,
     pub explanation_risk: f64,
@@ -232,6 +234,7 @@ pub fn score_split(input: SplitScoreInput, config: &SplitScoreConfig) -> Candida
         fragmentation_penalty,
         estimated_subtree_penalty,
         instability_penalty,
+        axp_rerank_penalty: 0.0,
         complexity_penalty: input.literal_count as f64,
         explanation_risk: input.fragmentation,
         estimated_cost: input.estimated_subtree_cost,

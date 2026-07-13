@@ -2,15 +2,17 @@
 
 use super::{
     allocate_family_budgets, AdaptiveLanguageConfig, AdaptiveLanguageDiagnostics,
-    AdaptiveNodeDiagnostics, BeamSearchDiagnostics, BestSubtreeCache, CacheConfig,
-    CacheDiagnostics, CachedSubtree, CandidatePoolCache, FamilyPilotMetrics, LanguagePolicy,
-    LookaheadCache, NodeStatistics, NodeStatisticsCache, ParallelConfig, ParallelDiagnostics,
-    PruningDiagnostics, SearchStateKey,
+    AdaptiveNodeDiagnostics, AxpCandidateDiagnostics, AxpRerankConfig, AxpRerankDiagnostics,
+    BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
+    CandidatePoolCache, FamilyPilotMetrics, LanguagePolicy, LookaheadCache, NodeStatistics,
+    NodeStatisticsCache, ParallelConfig, ParallelDiagnostics, PruningDiagnostics, SearchStateKey,
 };
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
+    explain::extract_axp_deletion,
     logic::{
-        candidate_is_compatible, Literal, PathTheoryState, Predicate, ThresholdAtom, ThresholdOp,
+        candidate_is_compatible, next_theory_state, Literal, PathTheoryState, Predicate,
+        ThresholdAtom, ThresholdOp,
     },
     search::{
         gini, information_gain, score_split, BranchAndBoundDiagnostics, SplitCandidate,
@@ -25,6 +27,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, RwLock,
     },
+    time::Instant,
 };
 
 /// Immutable row-mask view of one recursive training node.
@@ -69,6 +72,7 @@ pub struct TrainingDiagnostics {
     pub parallel: ParallelDiagnostics,
     pub pruning: PruningDiagnostics,
     pub adaptive_language: AdaptiveLanguageDiagnostics,
+    pub axp_rerank: AxpRerankDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -101,6 +105,7 @@ pub struct TrainingContext {
     parallel_diagnostics: RwLock<ParallelDiagnostics>,
     pruning_diagnostics: RwLock<PruningDiagnostics>,
     adaptive_language_diagnostics: RwLock<AdaptiveLanguageDiagnostics>,
+    axp_rerank_diagnostics: RwLock<AxpRerankDiagnostics>,
 }
 
 impl TrainingContext {
@@ -155,6 +160,7 @@ impl TrainingContext {
             parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
             pruning_diagnostics: RwLock::new(PruningDiagnostics::default()),
             adaptive_language_diagnostics: RwLock::new(AdaptiveLanguageDiagnostics::default()),
+            axp_rerank_diagnostics: RwLock::new(AxpRerankDiagnostics::default()),
         }
     }
 
@@ -318,6 +324,11 @@ impl TrainingContext {
                 .clone(),
             adaptive_language: self
                 .adaptive_language_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            axp_rerank: self
+                .axp_rerank_diagnostics
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
@@ -1239,6 +1250,126 @@ impl TrainingContext {
             });
         Ok(output)
     }
+
+    /// Reranks only the leading admissible candidates using certified AXps of
+    /// provisional majority-leaf stumps on deterministic training-node rows.
+    pub fn rerank_candidates_by_axp(
+        &self,
+        node: &NodeView,
+        mut candidates: Vec<SplitCandidate>,
+        score_config: &SplitScoreConfig,
+        config: &AxpRerankConfig,
+        seed: u64,
+    ) -> Result<Vec<SplitCandidate>> {
+        if !config.enabled || candidates.is_empty() {
+            return Ok(candidates);
+        }
+        candidates
+            .sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        let shortlist = config.shortlist_size.min(candidates.len());
+        let sample_rows = deterministic_node_sample(
+            &node.rows,
+            config.validation_samples,
+            seed ^ node.depth as u64,
+        );
+        let started = Instant::now();
+        let mut local = AxpRerankDiagnostics {
+            enabled: true,
+            shortlist_considered: shortlist,
+            ..AxpRerankDiagnostics::default()
+        };
+        for candidate in candidates.iter_mut().take(shortlist) {
+            let original_score = candidate.score.final_score;
+            let next_state = next_theory_state(node.theory_state, &candidate.predicate)?;
+            let timed_out_before = config
+                .timeout_ms
+                .is_some_and(|limit| started.elapsed().as_millis() >= u128::from(limit));
+            let mut timed_out = timed_out_before;
+            let mut lengths = Vec::new();
+            let (true_rows, false_rows) = self.split_masks(node, &candidate.predicate)?;
+            let true_counts = self.child_class_counts(&true_rows)?;
+            let false_counts = self.child_class_counts(&false_rows)?;
+            let stump = crate::tree::TreeNode::Internal {
+                predicate: candidate.predicate.clone(),
+                left: Box::new(crate::tree::TreeNode::Leaf {
+                    class: majority_from_counts(&true_counts),
+                    samples: true_rows.count_ones(),
+                }),
+                right: Box::new(crate::tree::TreeNode::Leaf {
+                    class: majority_from_counts(&false_counts),
+                    samples: false_rows.count_ones(),
+                }),
+                majority_class: self.majority_class(node)?,
+            };
+            if !timed_out {
+                for &row in &sample_rows {
+                    if config
+                        .timeout_ms
+                        .is_some_and(|limit| started.elapsed().as_millis() >= u128::from(limit))
+                    {
+                        timed_out = true;
+                        break;
+                    }
+                    let axp = extract_axp_deletion(&stump, &self.dataset.features, row, true);
+                    if !axp.metadata.theorem_certified {
+                        timed_out = true;
+                        break;
+                    }
+                    lengths.push(axp.features.len());
+                }
+            }
+            if config.timeout_ms.is_some_and(|limit| {
+                started.elapsed().as_millis() >= u128::from(limit)
+                    && lengths.len() < sample_rows.len()
+            }) {
+                timed_out = true;
+            }
+            let (mean, maximum) = if timed_out || lengths.is_empty() {
+                (None, None)
+            } else {
+                (
+                    Some(lengths.iter().sum::<usize>() as f64 / lengths.len() as f64),
+                    lengths.iter().copied().max(),
+                )
+            };
+            if let (Some(mean), Some(maximum)) = (mean, maximum) {
+                let penalty =
+                    config.weight_mean_axp * mean + config.weight_max_axp * maximum as f64;
+                candidate.score.axp_rerank_penalty = penalty;
+                candidate.score.final_score = original_score - penalty;
+                local.candidates_evaluated += 1;
+            } else if timed_out {
+                local.timeout_count += 1;
+            }
+            local.candidates.push(AxpCandidateDiagnostics {
+                canonical_predicate: crate::search::canonical_predicate_key(&candidate.predicate),
+                family: candidate.predicate.language(),
+                path_theory_state: next_state,
+                backend: next_state.backend(),
+                original_score,
+                rerank_score: candidate.score.final_score,
+                mean_axp_length: mean,
+                max_axp_length: maximum,
+                validation_samples: lengths.len(),
+                timed_out,
+                theorem_certified: crate::tree::tree_is_certified(&stump),
+            });
+        }
+        local.elapsed_seconds = started.elapsed().as_secs_f64();
+        candidates
+            .sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        let mut diagnostics = self
+            .axp_rerank_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.enabled = true;
+        diagnostics.shortlist_considered += local.shortlist_considered;
+        diagnostics.candidates_evaluated += local.candidates_evaluated;
+        diagnostics.timeout_count += local.timeout_count;
+        diagnostics.elapsed_seconds += local.elapsed_seconds;
+        diagnostics.candidates.extend(local.candidates);
+        Ok(candidates)
+    }
 }
 
 fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<LanguagePolicy> {
@@ -1281,6 +1412,28 @@ fn family_for_policy(policy: LanguagePolicy) -> crate::logic::LanguageFamily {
         LanguagePolicy::AffineOnly => crate::logic::LanguageFamily::Affine,
         _ => crate::logic::LanguageFamily::SmartCertified,
     }
+}
+
+fn majority_from_counts(counts: &[usize]) -> ClassId {
+    counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)
+        .map_or(0, |(class, _)| class as ClassId)
+}
+
+fn deterministic_node_sample(rows: &BitSet, count: usize, seed: u64) -> Vec<usize> {
+    let mut indices = (0..rows.len())
+        .filter(|&row| rows.get(row))
+        .collect::<Vec<_>>();
+    indices.sort_by_key(|&row| {
+        let mut value = row as u64 ^ seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    });
+    indices.truncate(count.min(indices.len()));
+    indices
 }
 
 fn predicate_key(predicate: &Predicate) -> String {
