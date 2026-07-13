@@ -1,7 +1,7 @@
 use super::TreeNode;
 use crate::{
     data::{ColumnMajorMatrix, Dataset},
-    logic::LanguageFamily,
+    logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
     search::{
         affine::generate_affine, antihorn::generate_antihorn, horn::generate_horn,
         square2cnf::generate_square2cnf, top_k, unary::generate_unary, SplitCandidate,
@@ -17,6 +17,9 @@ pub enum LanguagePolicy {
     Square2CnfOnly,
     AffineOnly,
     UnaryOnly,
+    /// Chooses among all certified families while preserving one tractable
+    /// theory on every root-to-leaf path.
+    SmartCertified,
     BestCertifiedPerNode,
     EmpiricalMixed,
     TunedExperimental,
@@ -59,7 +62,7 @@ pub fn learn(data: &Dataset, cfg: &LearnerConfig) -> Result<TreeNode> {
             "empirical policy in theorem mode".into(),
         ));
     }
-    build(data, cfg, 0)
+    build(data, cfg, 0, PathTheoryState::Uncommitted)
 }
 fn majority(labels: &[ClassId]) -> ClassId {
     let mut m = std::collections::BTreeMap::new();
@@ -83,7 +86,11 @@ fn subset(data: &Dataset, rows: &[usize]) -> Result<Dataset> {
     let labels = rows.iter().map(|&i| data.labels[i]).collect();
     Dataset::new(ColumnMajorMatrix::from_rows(&matrix_rows)?, labels)
 }
-fn candidates(data: &Dataset, cfg: &LearnerConfig) -> Vec<SplitCandidate> {
+fn candidates(
+    data: &Dataset,
+    cfg: &LearnerConfig,
+    path_state: PathTheoryState,
+) -> Vec<SplitCandidate> {
     let mut xs = Vec::new();
     match cfg.language_policy {
         LanguagePolicy::UnaryOnly => xs.extend(generate_unary(data, cfg.min_samples_leaf)),
@@ -102,6 +109,22 @@ fn candidates(data: &Dataset, cfg: &LearnerConfig) -> Vec<SplitCandidate> {
         )),
         LanguagePolicy::AffineOnly => {
             xs.extend(generate_affine(data, cfg.min_samples_leaf, cfg.beam_width))
+        }
+        LanguagePolicy::SmartCertified => {
+            xs.extend(generate_unary(data, cfg.min_samples_leaf));
+            xs.extend(generate_horn(data, cfg.min_samples_leaf, cfg.beam_width));
+            xs.extend(generate_antihorn(
+                data,
+                cfg.min_samples_leaf,
+                cfg.beam_width,
+            ));
+            xs.extend(generate_square2cnf(
+                data,
+                cfg.min_samples_leaf,
+                cfg.beam_width,
+            ));
+            xs.extend(generate_affine(data, cfg.min_samples_leaf, cfg.beam_width));
+            xs.retain(|candidate| candidate_is_compatible(path_state, &candidate.predicate));
         }
         LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => {
             xs.extend(generate_unary(data, cfg.min_samples_leaf));
@@ -123,7 +146,12 @@ fn candidates(data: &Dataset, cfg: &LearnerConfig) -> Vec<SplitCandidate> {
     }
     top_k(xs, cfg.max_candidates_per_node)
 }
-fn build(data: &Dataset, cfg: &LearnerConfig, depth: usize) -> Result<TreeNode> {
+fn build(
+    data: &Dataset,
+    cfg: &LearnerConfig,
+    depth: usize,
+    path_state: PathTheoryState,
+) -> Result<TreeNode> {
     let maj = majority(&data.labels);
     if depth >= cfg.max_depth
         || data.labels.len() < cfg.min_samples_split
@@ -134,7 +162,7 @@ fn build(data: &Dataset, cfg: &LearnerConfig, depth: usize) -> Result<TreeNode> 
             samples: data.labels.len(),
         });
     }
-    let cand = candidates(data, cfg);
+    let cand = candidates(data, cfg, path_state);
     let Some(best) = cand.into_iter().next() else {
         return Ok(TreeNode::Leaf {
             class: maj,
@@ -155,8 +183,15 @@ fn build(data: &Dataset, cfg: &LearnerConfig, depth: usize) -> Result<TreeNode> 
             rrows.push(i)
         }
     }
-    let left = build(&subset(data, &lrows)?, cfg, depth + 1)?;
-    let right = build(&subset(data, &rrows)?, cfg, depth + 1)?;
+    let child_state = if cfg.language_policy == LanguagePolicy::SmartCertified {
+        next_theory_state(path_state, &best.predicate)?
+    } else {
+        path_state
+    };
+    // Each recursive call receives its own copy, so descendants of one branch
+    // cannot commit the sibling branch to a theory.
+    let left = build(&subset(data, &lrows)?, cfg, depth + 1, child_state)?;
+    let right = build(&subset(data, &rrows)?, cfg, depth + 1, child_state)?;
     Ok(TreeNode::Internal {
         predicate: best.predicate,
         left: Box::new(left),
@@ -164,25 +199,60 @@ fn build(data: &Dataset, cfg: &LearnerConfig, depth: usize) -> Result<TreeNode> 
         majority_class: maj,
     })
 }
-/// Returns true if all internal predicates are theorem-table allowed.
-pub fn tree_is_certified(tree: &TreeNode) -> bool {
-    match tree {
-        TreeNode::Leaf { .. } => true,
-        TreeNode::Internal {
-            predicate,
-            left,
-            right,
-            ..
-        } => {
-            matches!(
-                predicate.language(),
-                LanguageFamily::Unary
-                    | LanguageFamily::Horn
-                    | LanguageFamily::AntiHorn
-                    | LanguageFamily::Square2Cnf
-                    | LanguageFamily::Affine
-            ) && tree_is_certified(left)
-                && tree_is_certified(right)
+/// Returns the distinct theory states reached by certified root-to-leaf paths.
+pub fn tree_path_theory_states(tree: &TreeNode) -> Result<Vec<PathTheoryState>> {
+    fn visit(
+        tree: &TreeNode,
+        state: PathTheoryState,
+        leaves: &mut Vec<PathTheoryState>,
+    ) -> Result<()> {
+        match tree {
+            TreeNode::Leaf { .. } => leaves.push(state),
+            TreeNode::Internal {
+                predicate,
+                left,
+                right,
+                ..
+            } => {
+                let next = next_theory_state(state, predicate)?;
+                visit(left, next, leaves)?;
+                visit(right, next, leaves)?;
+            }
         }
+        Ok(())
     }
+
+    let mut states = Vec::new();
+    visit(tree, PathTheoryState::Uncommitted, &mut states)?;
+    states.sort_unstable();
+    states.dedup();
+    Ok(states)
+}
+
+/// Stable path-level metadata for benchmark and debug output.
+pub fn tree_path_theory_metadata(tree: &TreeNode) -> (String, String, bool) {
+    match tree_path_theory_states(tree) {
+        Ok(states) => {
+            let state = states
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join("|");
+            let mut backends = states.iter().map(|s| s.backend()).collect::<Vec<_>>();
+            backends.sort_by_key(|backend| format!("{backend:?}"));
+            backends.dedup();
+            let backend = backends
+                .iter()
+                .map(|backend| format!("{backend:?}"))
+                .collect::<Vec<_>>()
+                .join("|");
+            (state, backend, true)
+        }
+        Err(_) => ("incompatible".into(), "Unsupported".into(), false),
+    }
+}
+
+/// Returns true iff every root-to-leaf path stays within one tractable theory.
+pub fn tree_is_certified(tree: &TreeNode) -> bool {
+    tree_path_theory_states(tree).is_ok()
 }

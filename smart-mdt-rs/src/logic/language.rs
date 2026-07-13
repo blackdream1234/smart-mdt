@@ -7,6 +7,8 @@ pub enum LanguageFamily {
     Square2Cnf,
     /// Certified Boolean affine (single GF(2) linear equation over Boolean variables).
     Affine,
+    /// Certified policy whose individual paths may use different tractable families.
+    SmartCertified,
     EmpiricalAffine,
     EmpiricalMixed,
     TunedExperimental,
@@ -16,7 +18,12 @@ impl LanguageFamily {
     pub fn theorem_table_allowed(self) -> bool {
         matches!(
             self,
-            Self::Unary | Self::Horn | Self::AntiHorn | Self::Square2Cnf | Self::Affine
+            Self::Unary
+                | Self::Horn
+                | Self::AntiHorn
+                | Self::Square2Cnf
+                | Self::Affine
+                | Self::SmartCertified
         )
     }
 }

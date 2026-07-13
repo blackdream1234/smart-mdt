@@ -3,12 +3,13 @@ use crate::{
     data::{
         class_counts, load_dl8_with_metadata, predicate_mask, predicate_scope_is_boolean, Dataset,
     },
-    logic::{Literal, Predicate, ThresholdAtom, ThresholdOp},
-    search::affine::AffineConfig,
+    logic::{next_theory_state, Literal, PathTheoryState, Predicate, ThresholdAtom, ThresholdOp},
+    search::affine::{generate_affine, AffineConfig},
     search::antihorn::generate_antihorn,
     search::horn::generate_horn,
     search::scoring::{final_score, gini, information_gain, CandidateScore, ScoreWeights},
     search::square2cnf::generate_square2cnf,
+    search::unary::generate_unary,
     FeatureId, Result, SmartMdtError,
 };
 use std::{
@@ -45,6 +46,9 @@ struct CandidateDiagnostic {
     balance: f64,
     boolean_scope: bool,
     theorem_certified: bool,
+    path_theory_state: String,
+    path_backend: String,
+    path_certified: bool,
     rejected: bool,
     rejected_reason: String,
 }
@@ -131,6 +135,18 @@ fn generate_diagnostics(
                 .into_iter()
                 .take(cap)
                 .map(|p| score_predicate(ds, p))
+                .collect();
+        }
+        "smart_certified" => {
+            let mut candidates = generate_unary(ds, 1);
+            candidates.extend(generate_horn(ds, 1, beam_width));
+            candidates.extend(generate_antihorn(ds, 1, beam_width));
+            candidates.extend(generate_square2cnf(ds, 1, beam_width));
+            candidates.extend(generate_affine(ds, 1, beam_width));
+            return candidates
+                .into_iter()
+                .take(cap)
+                .map(|c| score_predicate(ds, c.predicate))
                 .collect();
         }
         _ => {}
@@ -267,6 +283,14 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
     let boolean_scope = predicate_scope_is_boolean(&ds.features, &predicate);
     let base_cert = predicate.certificate(true).theorem_certified;
     let theorem_certified = base_cert && (!is_affine || boolean_scope);
+    let next_state = next_theory_state(PathTheoryState::Uncommitted, &predicate).ok();
+    let path_theory_state = next_state
+        .map(|state| state.as_str().to_string())
+        .unwrap_or_else(|| "incompatible".into());
+    let path_backend = next_state
+        .map(|state| format!("{:?}", state.backend()))
+        .unwrap_or_else(|| "Unsupported".into());
+    let path_certified = theorem_certified && next_state.is_some();
     let degenerate = true_count == 0 || false_count == 0;
     let guard_rejected = is_affine && !boolean_scope;
     let rejected = degenerate || guard_rejected;
@@ -307,6 +331,9 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
         balance: true_count.min(false_count) as f64 / ds.labels.len().max(1) as f64,
         boolean_scope,
         theorem_certified,
+        path_theory_state,
+        path_backend,
+        path_certified,
         rejected,
         rejected_reason,
     }
@@ -317,14 +344,14 @@ fn write_candidates_csv(
     ds: &Dataset,
     candidates: &[CandidateDiagnostic],
 ) -> Result<()> {
-    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,final_score,rejected,rejected_reason,arity,rhs,boolean_scope\n");
+    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,path_theory_state,path_backend,path_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,final_score,rejected,rejected_reason,arity,rhs,boolean_scope\n");
     let node_counts = counts_string(&ds.labels.iter().map(|&x| x as usize).collect::<Vec<_>>());
     for (rank, c) in candidates.iter().enumerate() {
         let candidate_id = format!("cand_{}", rank + 1);
-        out.push_str(&format!("{},{},{},{},{},{},{},{},{},{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        out.push_str(&format!("{},{},{},{},{},{},{},{},{},{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             csv(&cfg.dataset), cfg.method, cfg.depth, csv(&cfg.node_path), ds.labels.len(), csv(&node_counts), rank + 1,
             candidate_id, csv(&predicate_debug(&c.predicate)), c.predicate.language(), c.predicate.backend(), c.theorem_certified,
-            c.true_count, c.false_count, csv(&usize_counts(&c.true_counts)), csv(&usize_counts(&c.false_counts)), c.impurity_parent,
+            c.path_theory_state, c.path_backend, c.path_certified, c.true_count, c.false_count, csv(&usize_counts(&c.true_counts)), csv(&usize_counts(&c.false_counts)), c.impurity_parent,
             c.impurity_true, c.impurity_false, c.score.predictive_gain, c.balance, c.predicate.arity(), c.score.predictive_gain,
             c.score.certificate_bonus, c.score.final_score, c.rejected, csv(&c.rejected_reason),
             c.predicate.arity(), affine_rhs_str(&c.predicate), c.boolean_scope));

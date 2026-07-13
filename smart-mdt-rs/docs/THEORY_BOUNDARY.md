@@ -8,6 +8,8 @@ A subset of features is a weak AXp for instance `v` and prediction `c` when ever
 
 The implementation boundary follows the theorem stated in the seminar: if weak AXp checking for a language is polynomial, AXp extraction follows by the deletion algorithm; if a language is closed under complement and `CSP(L ∪ Asst)` is polynomial, weak AXp checking is polynomial for that language.
 
-Certified incompatibility is limited to polynomial fragments implemented and tested here: structural Horn, structural AntiHorn and 2-SAT. Certified result tables may contain only Unary, Horn, AntiHorn and Square2CNF rows with certified backends. Affine, empirical mixed, tuned and fallback methods are excluded.
+Certified support is limited to the polynomial fragments implemented and tested here: structural Horn, structural AntiHorn, 2-SAT, and Boolean affine systems solved over GF(2). Unary predicates do not commit a path. The first non-unary predicate commits that path to Horn, AntiHorn, TwoSat, or AffineGf2, after which only unary predicates or predicates from the committed family are allowed. Children of a unary path may commit independently.
+
+Certified result tables may contain the five single-family methods plus `smart_certified` when every path passes this state transition check. Empirical affine, empirical mixed, tuned, fallback, and path-incompatible trees are excluded.
 
 The learner is greedy/heuristic and beam-limited; it is not a global optimizer. The Rust implementation is tested by unit, regression and brute-force tests, but it is not formally verified. The current non-binary weak-AXp path uses dataset-domain completions and must not be described as a full real-valued CSP proof.

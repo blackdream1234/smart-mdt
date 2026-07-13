@@ -7,6 +7,8 @@ pub enum Backend {
     TwoSat,
     /// Certified path satisfiability by Gaussian elimination over GF(2).
     Gf2Gaussian,
+    /// Meta-backend indicating that every path has its own certified backend.
+    PathCertified,
     IntervalDfsFallback,
     PrototypeCaseSplit,
     Affine,
@@ -21,6 +23,8 @@ pub enum PathCertificate {
     TwoCnf,
     /// GF(2) linear system solved by Gaussian elimination.
     AffineGf2,
+    /// Each root-to-leaf path is certified under its recorded theory state.
+    PathTheory,
     Empirical,
     Unsupported,
 }
@@ -49,6 +53,7 @@ impl CertificateMetadata {
                     | Backend::StructuralAntiHorn
                     | Backend::TwoSat
                     | Backend::Gf2Gaussian
+                    | Backend::PathCertified
             );
         Self {
             theorem_mode,

@@ -3,7 +3,10 @@ use crate::{
     data::{load_dl8_with_metadata, ColumnMajorMatrix, Dataset, DatasetMetadata},
     explain::extract_axp_deletion,
     logic::{Backend, LanguageFamily},
-    tree::{learn, predict_all, tree_is_certified, LanguagePolicy, LearnerConfig},
+    tree::{
+        learn, predict_all, tree_is_certified, tree_path_theory_metadata, LanguagePolicy,
+        LearnerConfig,
+    },
     Result, SmartMdtError,
 };
 use std::{
@@ -149,6 +152,11 @@ fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backen
             LanguageFamily::Affine,
             Backend::Gf2Gaussian,
         )),
+        "smart_certified" => Some((
+            LanguagePolicy::SmartCertified,
+            LanguageFamily::SmartCertified,
+            Backend::PathCertified,
+        )),
         "best-certified" => Some((
             LanguagePolicy::BestCertifiedPerNode,
             LanguageFamily::Unary,
@@ -199,6 +207,8 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 };
                 let train_start = Instant::now();
                 let tree = learn(&train, &cfg)?;
+                let (path_theory_state, path_backend, path_certified) =
+                    tree_path_theory_metadata(&tree);
                 let train_time = if measure_times {
                     train_start.elapsed().as_secs_f64()
                 } else {
@@ -215,11 +225,11 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
 
                 let axp_start = Instant::now();
                 let (mean_axp_length, theorem_certified) = if test.features.rows() == 0 {
-                    (0.0, tree_is_certified(&tree))
+                    (0.0, path_certified)
                 } else {
                     let limit = test.features.rows().min(8);
                     let mut total = 0usize;
-                    let mut certified = tree_is_certified(&tree);
+                    let mut certified = path_certified && tree_is_certified(&tree);
                     for row in 0..limit {
                         let axp = extract_axp_deletion(&tree, &test.features, row, true);
                         total += axp.features.len();
@@ -249,6 +259,9 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     theorem_certified,
                     language_family: declared_family,
                     backend: declared_backend,
+                    path_theory_state,
+                    path_backend,
+                    path_certified,
                     git_sha: git_sha.clone(),
                     config: format!("{:?}", &cfg),
                     random_state: seed.wrapping_add(run as u64),
@@ -383,6 +396,17 @@ fn collect_metadata_warnings(meta: &DatasetMetadata, warnings: &mut Vec<Benchmar
 
 fn collect_result_warnings(rows: &[ResultRow], warnings: &mut Vec<BenchmarkWarning>) {
     for r in rows {
+        if !r.path_certified {
+            warnings.push(BenchmarkWarning {
+                dataset: r.dataset.clone(),
+                run: r.run.to_string(),
+                depth: r.depth.to_string(),
+                method: r.method.clone(),
+                warning_type: "path_compatibility_violation".into(),
+                message: "a root-to-leaf path mixes incompatible certified theories".into(),
+                value: r.path_theory_state.clone(),
+            });
+        }
         if r.accuracy >= 0.99 && r.tree_nodes <= 3 {
             warnings.push(BenchmarkWarning {
                 dataset: r.dataset.clone(),
@@ -510,7 +534,7 @@ fn write_all_outputs(
     fs::write(
         output.as_ref().join("README_RESULTS.md"),
         format!(
-            "# CGS-MDT benchmark results\n\nRows: {}\n\nThe theorem table is filtered to Unary, Horn, AntiHorn and Square2CNF methods with certified backends only.\n",
+            "# CGS-MDT benchmark results\n\nRows: {}\n\nThe theorem table contains Unary, Horn, AntiHorn, Square2CNF, Boolean Affine/GF(2), and path-compatible SmartCertified rows with certified backends only.\n",
             rows.len()
         ),
     )?;
@@ -549,6 +573,7 @@ fn method_label(method: &str) -> &str {
         "antihorn" => "AntiHorn",
         "square2cnf" => "Square2CNF",
         "affine" => "Affine",
+        "smart_certified" => "Smart certified",
         "best-certified" => "Best certified per node",
         other => other,
     }
@@ -560,13 +585,14 @@ fn path_certificate(backend: Backend) -> &'static str {
         Backend::StructuralAntiHorn => "AntiHornCnf",
         Backend::TwoSat => "TwoCnf",
         Backend::Gf2Gaussian => "AffineGf2",
+        Backend::PathCertified => "PathTheory",
         Backend::Affine => "Empirical",
         _ => "Unsupported",
     }
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -581,44 +607,48 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
         } else {
             "not theorem-table eligible"
         };
-        out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?},{},{},{},{},{},{}\n",
+        let fields = vec![
             csv_escape(&r.dataset),
-            r.run,
-            r.depth,
-            r.method,
-            r.accuracy,
-            r.train_time,
-            r.predict_time,
-            r.tree_nodes,
-            r.leaves,
-            r.max_depth_reached,
-            r.mean_axp_length,
-            r.axp_time,
-            r.theorem_certified,
-            r.language_family,
-            r.backend,
-            r.git_sha,
+            r.run.to_string(),
+            r.depth.to_string(),
+            r.method.clone(),
+            r.accuracy.to_string(),
+            r.train_time.to_string(),
+            r.predict_time.to_string(),
+            r.tree_nodes.to_string(),
+            r.leaves.to_string(),
+            r.max_depth_reached.to_string(),
+            r.mean_axp_length.to_string(),
+            r.axp_time.to_string(),
+            r.theorem_certified.to_string(),
+            format!("{:?}", r.language_family),
+            format!("{:?}", r.backend),
+            csv_escape(&r.path_theory_state),
+            csv_escape(&r.path_backend),
+            r.path_certified.to_string(),
+            r.git_sha.clone(),
             csv_escape(&r.config),
-            r.method,
+            r.method.clone(),
             csv_escape(method_label(&r.method)),
-            category,
-            r.accuracy,
-            0.0,
-            r.tree_nodes,
-            r.mean_axp_length,
-            axp_rate,
-            axp_rate,
-            n_success,
-            n_fail,
-            r.backend,
-            path_certificate(r.backend),
+            category.into(),
+            r.accuracy.to_string(),
+            0.0f64.to_string(),
+            r.tree_nodes.to_string(),
+            r.mean_axp_length.to_string(),
+            axp_rate.to_string(),
+            axp_rate.to_string(),
+            n_success.to_string(),
+            n_fail.to_string(),
+            format!("{:?}", r.backend),
+            path_certificate(r.backend).into(),
             csv_escape(rejected_reason),
-            true,
-            r.random_state,
-            r.n_runs,
-            r.train_test_split_protocol
-        ));
+            true.to_string(),
+            r.random_state.to_string(),
+            r.n_runs.to_string(),
+            r.train_test_split_protocol.clone(),
+        ];
+        out.push_str(&fields.join(","));
+        out.push('\n');
     }
     fs::write(path, out)?;
     Ok(())

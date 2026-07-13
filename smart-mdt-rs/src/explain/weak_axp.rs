@@ -1,64 +1,58 @@
 use super::WeakAxpResult;
 use crate::{
     data::ColumnMajorMatrix,
-    logic::{CertificateMetadata, LanguageFamily},
-    tree::{predict_row, TreeNode},
+    logic::{Backend, CertificateMetadata, LanguageFamily, PathCertificate, PathTheoryState},
+    tree::{predict_row, tree_path_theory_states, TreeNode},
     ClassId, FeatureId,
 };
 
 fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
-    fn fam(t: &TreeNode, acc: &mut Vec<LanguageFamily>) {
-        if let TreeNode::Internal {
-            predicate,
-            left,
-            right,
-            ..
-        } = t
-        {
-            acc.push(predicate.language());
-            fam(left, acc);
-            fam(right, acc);
-        }
-    }
-    let mut fs = Vec::new();
-    fam(tree, &mut fs);
-    let f = fs.first().copied().unwrap_or(LanguageFamily::Unary);
-    let same = fs.iter().all(|x| *x == f);
-    let meta = match f {
-        LanguageFamily::Unary | LanguageFamily::Horn => CertificateMetadata::new(
+    let Ok(states) = tree_path_theory_states(tree) else {
+        return CertificateMetadata::rejected(
             theorem_mode,
-            f,
-            crate::logic::Backend::StructuralHorn,
-            crate::logic::PathCertificate::HornCnf,
-        ),
-        LanguageFamily::AntiHorn => CertificateMetadata::new(
-            theorem_mode,
-            f,
-            crate::logic::Backend::StructuralAntiHorn,
-            crate::logic::PathCertificate::AntiHornCnf,
-        ),
-        LanguageFamily::Square2Cnf => CertificateMetadata::new(
-            theorem_mode,
-            f,
-            crate::logic::Backend::TwoSat,
-            crate::logic::PathCertificate::TwoCnf,
-        ),
-        LanguageFamily::Affine => CertificateMetadata::new(
-            theorem_mode,
-            f,
-            crate::logic::Backend::Gf2Gaussian,
-            crate::logic::PathCertificate::AffineGf2,
-        ),
-        _ => CertificateMetadata::rejected(theorem_mode, f, "empirical path"),
-    };
-    if theorem_mode && !same {
-        CertificateMetadata::rejected(
-            true,
             LanguageFamily::EmpiricalMixed,
-            "mixed paths are not theorem-certified",
-        )
-    } else {
-        meta
+            "incompatible theories occur on a root-to-leaf path",
+        );
+    };
+    if states.len() != 1 {
+        return CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::SmartCertified,
+            Backend::PathCertified,
+            PathCertificate::PathTheory,
+        );
+    }
+    match states[0] {
+        PathTheoryState::Uncommitted => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
+            PathCertificate::HornCnf,
+        ),
+        PathTheoryState::Horn => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Horn,
+            Backend::StructuralHorn,
+            PathCertificate::HornCnf,
+        ),
+        PathTheoryState::AntiHorn => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::AntiHorn,
+            Backend::StructuralAntiHorn,
+            PathCertificate::AntiHornCnf,
+        ),
+        PathTheoryState::TwoSat => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Square2Cnf,
+            Backend::TwoSat,
+            PathCertificate::TwoCnf,
+        ),
+        PathTheoryState::AffineGf2 => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Affine,
+            Backend::Gf2Gaussian,
+            PathCertificate::AffineGf2,
+        ),
     }
 }
 

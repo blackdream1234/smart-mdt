@@ -17,6 +17,12 @@ pub struct ResultRow {
     pub theorem_certified: bool,
     pub language_family: LanguageFamily,
     pub backend: Backend,
+    /// Distinct theory states reached by root-to-leaf paths.
+    pub path_theory_state: String,
+    /// Distinct certified backends used by root-to-leaf paths.
+    pub path_backend: String,
+    /// Whether every root-to-leaf path passed theory-state validation.
+    pub path_certified: bool,
     pub git_sha: String,
     pub config: String,
     pub random_state: u64,
@@ -38,6 +44,18 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         "antihorn" => matches!(r.backend, Backend::StructuralAntiHorn),
         "square2cnf" => matches!(r.backend, Backend::TwoSat),
         "affine" => matches!(r.backend, Backend::Gf2Gaussian),
+        "smart_certified" => {
+            r.path_certified
+                && matches!(r.language_family, LanguageFamily::SmartCertified)
+                && matches!(r.backend, Backend::PathCertified)
+                && !r.path_backend.is_empty()
+                && r.path_backend.split('|').all(|backend| {
+                    matches!(
+                        backend,
+                        "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian"
+                    )
+                })
+        }
         _ => false,
     }
 }
