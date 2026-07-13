@@ -2,7 +2,9 @@ use super::{NodeView, TrainingContext, TrainingDiagnostics, TreeNode};
 use crate::{
     data::Dataset,
     logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
-    search::{top_k_with_config, SplitCandidate, SplitScoreConfig},
+    search::{
+        exact_branch_and_bound_top_k, BranchAndBoundConfig, SplitCandidate, SplitScoreConfig,
+    },
     Result, SmartMdtError,
 };
 use std::sync::Arc;
@@ -31,6 +33,7 @@ pub struct LearnerConfig {
     pub max_candidates_per_node: usize,
     pub beam_width: usize,
     pub split_score: SplitScoreConfig,
+    pub branch_and_bound: BranchAndBoundConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -44,6 +47,7 @@ impl Default for LearnerConfig {
             max_candidates_per_node: 64,
             beam_width: 8,
             split_score: SplitScoreConfig::default(),
+            branch_and_bound: BranchAndBoundConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -90,11 +94,18 @@ fn candidates(
         generated
             .retain(|candidate| candidate_is_compatible(node.theory_state, &candidate.predicate));
     }
-    Ok(top_k_with_config(
-        generated,
-        cfg.max_candidates_per_node,
-        &cfg.split_score,
-    ))
+    let mut branch_config = cfg.branch_and_bound.clone();
+    branch_config.top_k = if branch_config.enabled {
+        branch_config.top_k.min(cfg.max_candidates_per_node)
+    } else {
+        cfg.max_candidates_per_node
+    };
+    let (selected, diagnostics) =
+        exact_branch_and_bound_top_k(generated, &branch_config, &cfg.split_score, |predicate| {
+            Arc::<[u64]>::from(context.full_predicate_mask(predicate).words().to_vec())
+        });
+    context.record_branch_and_bound(&diagnostics);
+    Ok(selected)
 }
 fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
     let sample_count = context.sample_count(&node);

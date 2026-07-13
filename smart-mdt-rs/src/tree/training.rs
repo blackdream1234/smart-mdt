@@ -7,7 +7,8 @@ use crate::{
         candidate_is_compatible, Literal, PathTheoryState, Predicate, ThresholdAtom, ThresholdOp,
     },
     search::{
-        gini, information_gain, score_split, SplitCandidate, SplitScoreConfig, SplitScoreInput,
+        gini, information_gain, score_split, BranchAndBoundDiagnostics, SplitCandidate,
+        SplitScoreConfig, SplitScoreInput,
     },
     ClassId, FeatureId, Result,
 };
@@ -38,13 +39,14 @@ impl NodeView {
 }
 
 /// Snapshot of allocation and incremental-statistics counters.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrainingDiagnostics {
     pub dataset_subset_allocations_avoided: usize,
     pub predicate_mask_cache_hits: usize,
     pub predicate_mask_cache_misses: usize,
     pub count_operations: usize,
     pub row_rescans_avoided: usize,
+    pub branch_and_bound: BranchAndBoundDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -66,6 +68,7 @@ pub struct TrainingContext {
     pub unary_literal_masks: RwLock<BTreeMap<String, Arc<BitSet>>>,
     pub predicate_mask_cache: RwLock<BTreeMap<String, Arc<BitSet>>>,
     diagnostics: AtomicTrainingDiagnostics,
+    branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
 }
 
 impl TrainingContext {
@@ -103,6 +106,7 @@ impl TrainingContext {
             unary_literal_masks: RwLock::new(BTreeMap::new()),
             predicate_mask_cache: RwLock::new(BTreeMap::new()),
             diagnostics: AtomicTrainingDiagnostics::default(),
+            branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
         }
     }
 
@@ -230,7 +234,31 @@ impl TrainingContext {
                 .load(Ordering::Relaxed),
             count_operations: self.diagnostics.count_operations.load(Ordering::Relaxed),
             row_rescans_avoided: self.diagnostics.row_rescans_avoided.load(Ordering::Relaxed),
+            branch_and_bound: self
+                .branch_and_bound_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
+    }
+
+    pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {
+        let mut total = self
+            .branch_and_bound_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        total.partial_states_created += current.partial_states_created;
+        total.partial_states_expanded += current.partial_states_expanded;
+        total.partial_states_pruned += current.partial_states_pruned;
+        total.exhaustive_fallback_count += current.exhaustive_fallback_count;
+        total.complete_candidates_evaluated += current.complete_candidates_evaluated;
+        total.best_bound = total.best_bound.max(current.best_bound);
+        total.kth_best_threshold = current.kth_best_threshold;
+        total.percentage_reduction = if total.partial_states_created == 0 {
+            0.0
+        } else {
+            100.0 * total.partial_states_pruned as f64 / total.partial_states_created as f64
+        };
     }
 
     fn node_values(&self, node: &NodeView, feature: FeatureId) -> Vec<f64> {
