@@ -1,6 +1,9 @@
 //! Incremental bitset-backed training views and candidate statistics.
 
-use super::LanguagePolicy;
+use super::{
+    BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree, CandidatePoolCache,
+    LanguagePolicy, LookaheadCache, NodeStatistics, NodeStatisticsCache, SearchStateKey,
+};
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
     logic::{
@@ -47,6 +50,7 @@ pub struct TrainingDiagnostics {
     pub count_operations: usize,
     pub row_rescans_avoided: usize,
     pub branch_and_bound: BranchAndBoundDiagnostics,
+    pub cache: CacheDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -66,7 +70,13 @@ pub struct TrainingContext {
     pub boolean_column_masks: Vec<Option<BitSet>>,
     pub feature_domains: Vec<Vec<f64>>,
     pub unary_literal_masks: RwLock<BTreeMap<String, Arc<BitSet>>>,
-    pub predicate_mask_cache: RwLock<BTreeMap<String, Arc<BitSet>>>,
+    pub predicate_mask_cache: RwLock<super::BoundedCache<String, Arc<BitSet>>>,
+    pub cache_config: CacheConfig,
+    node_statistics_cache: RwLock<NodeStatisticsCache>,
+    candidate_pool_cache: RwLock<CandidatePoolCache>,
+    best_subtree_cache: RwLock<BestSubtreeCache>,
+    lookahead_cache: RwLock<LookaheadCache>,
+    cache_diagnostics: RwLock<CacheDiagnostics>,
     diagnostics: AtomicTrainingDiagnostics,
     branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
 }
@@ -74,6 +84,10 @@ pub struct TrainingContext {
 impl TrainingContext {
     /// Creates one context for an entire fit. Recursive nodes share this root dataset.
     pub fn new(dataset: Arc<Dataset>) -> Self {
+        Self::with_cache_config(dataset, CacheConfig::default())
+    }
+
+    pub fn with_cache_config(dataset: Arc<Dataset>, cache_config: CacheConfig) -> Self {
         let classes = dataset.class_count().max(2);
         let mut class_masks = vec![BitSet::zeros(dataset.labels.len()); classes];
         for (row, &class) in dataset.labels.iter().enumerate() {
@@ -98,13 +112,21 @@ impl TrainingContext {
             }
         }
 
+        let max_entries = cache_config.max_entries;
+        let max_bytes = cache_config.approximate_byte_limit;
         Self {
             dataset,
             class_masks,
             boolean_column_masks,
             feature_domains,
             unary_literal_masks: RwLock::new(BTreeMap::new()),
-            predicate_mask_cache: RwLock::new(BTreeMap::new()),
+            predicate_mask_cache: RwLock::new(super::BoundedCache::new(max_entries, max_bytes)),
+            cache_config,
+            node_statistics_cache: RwLock::new(NodeStatisticsCache::new(max_entries, max_bytes)),
+            candidate_pool_cache: RwLock::new(CandidatePoolCache::new(max_entries, max_bytes)),
+            best_subtree_cache: RwLock::new(BestSubtreeCache::new(max_entries, max_bytes)),
+            lookahead_cache: RwLock::new(LookaheadCache::new(max_entries, max_bytes)),
+            cache_diagnostics: RwLock::new(CacheDiagnostics::default()),
             diagnostics: AtomicTrainingDiagnostics::default(),
             branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
         }
@@ -146,42 +168,55 @@ impl TrainingContext {
     /// Returns a full-dataset predicate mask, computing it only on the first use.
     pub fn full_predicate_mask(&self, predicate: &Predicate) -> Arc<BitSet> {
         let key = predicate_key(predicate);
-        if let Some(mask) = self
-            .predicate_mask_cache
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&key)
-            .cloned()
-        {
-            self.diagnostics
-                .predicate_mask_cache_hits
-                .fetch_add(1, Ordering::Relaxed);
-            self.diagnostics
-                .row_rescans_avoided
-                .fetch_add(self.dataset.labels.len(), Ordering::Relaxed);
-            return mask;
+        let cache_enabled = self.cache_config.enabled && self.cache_config.predicate_masks;
+        if cache_enabled {
+            if let Some(mask) = self
+                .predicate_mask_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&key)
+            {
+                self.diagnostics
+                    .predicate_mask_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                self.diagnostics
+                    .row_rescans_avoided
+                    .fetch_add(self.dataset.labels.len(), Ordering::Relaxed);
+                self.update_cache_diagnostics(|diagnostics| {
+                    diagnostics.predicate_masks.hits += 1;
+                });
+                return mask;
+            }
         }
 
         self.diagnostics
             .predicate_mask_cache_misses
             .fetch_add(1, Ordering::Relaxed);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.predicate_masks.misses += 1;
+        });
         let computed = Arc::new(predicate_mask(&self.dataset.features, predicate));
-        let mut cache = self
-            .predicate_mask_cache
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mask = cache
-            .entry(key.clone())
-            .or_insert_with(|| computed.clone())
-            .clone();
+        if cache_enabled {
+            let approximate_bytes = key.len() + std::mem::size_of_val(computed.words());
+            let evictions = self
+                .predicate_mask_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key.clone(), computed.clone(), approximate_bytes);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.predicate_masks.insertions += 1;
+                diagnostics.predicate_masks.evictions += evictions;
+            });
+            self.refresh_cache_memory();
+        }
         if matches!(predicate, Predicate::Unary(_)) {
             self.unary_literal_masks
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .entry(key)
-                .or_insert_with(|| mask.clone());
+                .or_insert_with(|| computed.clone());
         }
-        mask
+        computed
     }
 
     pub fn predicate_mask(&self, node: &NodeView, predicate: &Predicate) -> Result<BitSet> {
@@ -239,6 +274,7 @@ impl TrainingContext {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            cache: self.cache_diagnostics(),
         }
     }
 
@@ -259,6 +295,222 @@ impl TrainingContext {
         } else {
             100.0 * total.partial_states_pruned as f64 / total.partial_states_created as f64
         };
+    }
+
+    fn update_cache_diagnostics(&self, update: impl FnOnce(&mut CacheDiagnostics)) {
+        update(
+            &mut self
+                .cache_diagnostics
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
+    fn refresh_cache_memory(&self) {
+        let bytes = self
+            .predicate_mask_cache
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .approximate_bytes()
+            + self
+                .node_statistics_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .candidate_pool_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .best_subtree_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .lookahead_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes();
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.approximate_memory_bytes = bytes;
+        });
+    }
+
+    pub fn cache_diagnostics(&self) -> CacheDiagnostics {
+        self.cache_diagnostics
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn node_statistics_cached(
+        &self,
+        key: &SearchStateKey,
+        node: &NodeView,
+    ) -> Result<NodeStatistics> {
+        let enabled = self.cache_config.enabled && self.cache_config.node_statistics;
+        if enabled {
+            if let Some(statistics) = self
+                .node_statistics_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(key)
+            {
+                self.update_cache_diagnostics(|diagnostics| {
+                    diagnostics.node_statistics.hits += 1;
+                });
+                return Ok(statistics);
+            }
+        }
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.node_statistics.misses += 1;
+        });
+        let class_counts = self.class_counts(node)?;
+        let statistics = NodeStatistics {
+            sample_count: node.rows.count_ones(),
+            majority_class: class_counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, count)| **count)
+                .map_or(0, |(class, _)| class as ClassId),
+            class_counts,
+        };
+        if enabled {
+            let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+                + statistics.class_counts.len() * std::mem::size_of::<usize>()
+                + 64;
+            let evictions = self
+                .node_statistics_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key.clone(), statistics.clone(), bytes);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.node_statistics.insertions += 1;
+                diagnostics.node_statistics.evictions += evictions;
+            });
+            self.refresh_cache_memory();
+        }
+        Ok(statistics)
+    }
+
+    pub fn candidate_pool_cached(&self, key: &SearchStateKey) -> Option<Vec<SplitCandidate>> {
+        if !(self.cache_config.enabled && self.cache_config.candidate_pools) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.candidate_pools.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .candidate_pool_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.candidate_pools.hits += 1;
+            } else {
+                diagnostics.candidate_pools.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_candidate_pool(&self, key: SearchStateKey, candidates: Vec<SplitCandidate>) {
+        if !(self.cache_config.enabled && self.cache_config.candidate_pools) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+            + candidates.len() * std::mem::size_of::<SplitCandidate>();
+        let evictions = self
+            .candidate_pool_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, candidates, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.candidate_pools.insertions += 1;
+            diagnostics.candidate_pools.evictions += evictions;
+        });
+        self.refresh_cache_memory();
+    }
+
+    pub fn best_subtree_cached(&self, key: &SearchStateKey) -> Option<CachedSubtree> {
+        if !(self.cache_config.enabled && self.cache_config.best_subtrees) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.best_subtrees.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .best_subtree_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.best_subtrees.hits += 1;
+            } else {
+                diagnostics.best_subtrees.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_best_subtree(&self, key: SearchStateKey, subtree: CachedSubtree) {
+        if !(self.cache_config.enabled && self.cache_config.best_subtrees) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+            + subtree.node_count * std::mem::size_of::<crate::tree::TreeNode>();
+        let evictions = self
+            .best_subtree_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, subtree, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.best_subtrees.insertions += 1;
+            diagnostics.best_subtrees.evictions += evictions;
+        });
+        self.refresh_cache_memory();
+    }
+
+    pub fn lookahead_cached(&self, key: &SearchStateKey) -> Option<f64> {
+        if !(self.cache_config.enabled && self.cache_config.lookahead) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.lookahead.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .lookahead_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.lookahead.hits += 1;
+            } else {
+                diagnostics.lookahead.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_lookahead(&self, key: SearchStateKey, objective: f64) {
+        if !(self.cache_config.enabled && self.cache_config.lookahead) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>() + 64;
+        let evictions = self
+            .lookahead_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, objective, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.lookahead.insertions += 1;
+            diagnostics.lookahead.evictions += evictions;
+        });
+        self.refresh_cache_memory();
     }
 
     fn node_values(&self, node: &NodeView, feature: FeatureId) -> Vec<f64> {

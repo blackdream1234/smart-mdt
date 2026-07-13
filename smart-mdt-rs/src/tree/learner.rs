@@ -1,4 +1,7 @@
-use super::{NodeView, TrainingContext, TrainingDiagnostics, TreeNode};
+use super::{
+    predict_row, CacheConfig, CachedSubtree, NodeView, SearchStateKey, TrainingContext,
+    TrainingDiagnostics, TreeNode,
+};
 use crate::{
     data::Dataset,
     logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
@@ -34,6 +37,7 @@ pub struct LearnerConfig {
     pub beam_width: usize,
     pub split_score: SplitScoreConfig,
     pub branch_and_bound: BranchAndBoundConfig,
+    pub cache: CacheConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -48,6 +52,7 @@ impl Default for LearnerConfig {
             beam_width: 8,
             split_score: SplitScoreConfig::default(),
             branch_and_bound: BranchAndBoundConfig::default(),
+            cache: CacheConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -74,15 +79,19 @@ pub fn learn_with_diagnostics(
             "empirical policy in theorem mode".into(),
         ));
     }
-    let context = TrainingContext::new(Arc::new(data.clone()));
+    let context = TrainingContext::with_cache_config(Arc::new(data.clone()), cfg.cache.clone());
     let tree = build(&context, cfg, context.root_view())?;
     Ok((tree, context.diagnostics()))
 }
 fn candidates(
     context: &TrainingContext,
     node: &NodeView,
+    state_key: &SearchStateKey,
     cfg: &LearnerConfig,
 ) -> Result<Vec<SplitCandidate>> {
+    if let Some(cached) = context.candidate_pool_cached(state_key) {
+        return Ok(cached);
+    }
     let mut generated = context.generate_candidates(
         node,
         cfg.language_policy,
@@ -105,27 +114,37 @@ fn candidates(
             Arc::<[u64]>::from(context.full_predicate_mask(predicate).words().to_vec())
         });
     context.record_branch_and_bound(&diagnostics);
+    context.insert_candidate_pool(state_key.clone(), selected.clone());
     Ok(selected)
 }
 fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
-    let sample_count = context.sample_count(&node);
-    let class_counts = context.class_counts(&node)?;
-    let majority_class = context.majority_class(&node)?;
+    let state_key = search_state_key(&node, cfg);
+    if let Some(cached) = context.best_subtree_cached(&state_key) {
+        return Ok((*cached.tree).clone());
+    }
+    let statistics = context.node_statistics_cached(&state_key, &node)?;
+    let sample_count = statistics.sample_count;
+    let class_counts = statistics.class_counts;
+    let majority_class = statistics.majority_class;
     if node.depth >= cfg.max_depth
         || sample_count < cfg.min_samples_split
         || class_counts.iter().filter(|&&count| count > 0).count() <= 1
     {
-        return Ok(TreeNode::Leaf {
+        let tree = TreeNode::Leaf {
             class: majority_class,
             samples: sample_count,
-        });
+        };
+        cache_subtree(context, &node, state_key, &tree);
+        return Ok(tree);
     }
-    let cand = candidates(context, &node, cfg)?;
+    let cand = candidates(context, &node, &state_key, cfg)?;
     let Some(best) = cand.into_iter().next() else {
-        return Ok(TreeNode::Leaf {
+        let tree = TreeNode::Leaf {
             class: majority_class,
             samples: sample_count,
-        });
+        };
+        cache_subtree(context, &node, state_key, &tree);
+        return Ok(tree);
     };
     if cfg.theorem_mode && !best.predicate.language().theorem_table_allowed() {
         return Err(SmartMdtError::TheoremRejected(
@@ -159,12 +178,68 @@ fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Resu
             theory_state: child_state,
         },
     )?;
-    Ok(TreeNode::Internal {
+    let tree = TreeNode::Internal {
         predicate: best.predicate,
         left: Box::new(left),
         right: Box::new(right),
         majority_class,
-    })
+    };
+    cache_subtree(context, &node, state_key, &tree);
+    Ok(tree)
+}
+
+fn search_state_key(node: &NodeView, cfg: &LearnerConfig) -> SearchStateKey {
+    SearchStateKey::new(
+        &node.rows,
+        cfg.max_depth.saturating_sub(node.depth),
+        u16::MAX as usize,
+        node.theory_state,
+        format!("{:?}", cfg.split_score),
+        format!(
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};beam={};branch={:?}",
+            cfg.language_policy,
+            cfg.min_samples_split,
+            cfg.min_samples_leaf,
+            cfg.max_candidates_per_node,
+            cfg.beam_width,
+            cfg.branch_and_bound
+        ),
+    )
+}
+
+fn cache_subtree(
+    context: &TrainingContext,
+    node: &NodeView,
+    state_key: SearchStateKey,
+    tree: &TreeNode,
+) {
+    if !(context.cache_config.enabled && context.cache_config.best_subtrees) {
+        return;
+    }
+    let mut mistakes = 0usize;
+    for row in 0..node.rows.len() {
+        if node.rows.get(row)
+            && predict_row(tree, &context.dataset.features, row) != context.dataset.labels[row]
+        {
+            mistakes += 1;
+        }
+    }
+    let samples = node.rows.count_ones();
+    let training_error = mistakes as f64 / samples.max(1) as f64;
+    context.insert_best_subtree(
+        state_key,
+        CachedSubtree {
+            tree: Arc::new(tree.clone()),
+            training_error,
+            validation_error: None,
+            node_count: tree.nodes(),
+            leaf_count: tree.leaves(),
+            literal_count: tree.literals(),
+            estimated_axp_length: None,
+            objective: training_error,
+            path_certified: tree_is_certified(tree),
+        },
+    );
 }
 /// Returns the distinct theory states reached by certified root-to-leaf paths.
 pub fn tree_path_theory_states(tree: &TreeNode) -> Result<Vec<PathTheoryState>> {
