@@ -199,6 +199,7 @@ fn smart_row(path_certified: bool) -> ResultRow {
         random_state: 42,
         n_runs: 1,
         train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
+        ..ResultRow::default()
     }
 }
 

@@ -66,7 +66,7 @@ fn cals_benchmark_method_is_theorem_admissible() {
         depths: vec![2],
         runs: 1,
         methods: vec!["cals".into()],
-        output,
+        output: output.clone(),
         seed: 42,
         strict_data_checks: false,
         cals: CalsConfig::thesis(),
@@ -74,7 +74,63 @@ fn cals_benchmark_method_is_theorem_admissible() {
     .unwrap();
     assert_eq!(rows.len(), 1);
     assert!(rows[0].path_certified);
+    assert_eq!(rows[0].path_violation_count, 0);
+    assert!(rows[0].all_predicates_backend_allowed);
+    assert!(!rows[0].empirical_fallback_used);
+    assert!(!rows[0].incompatible_cached_subtree_reused);
+    assert!(rows[0].theorem_rejection_reason.is_empty());
     assert!(theorem_table_filter(&rows[0]));
+    let full = fs::read_to_string(output.join("full_results.csv")).unwrap();
+    let header = full.lines().next().unwrap();
+    for required in [
+        "search_strategy",
+        "score_profile",
+        "candidate_beam_width",
+        "tree_beam_width",
+        "lookahead_depth",
+        "node_budget",
+        "pruning_enabled",
+        "nodes_before_prune",
+        "nodes_after_prune",
+        "leaves_before_prune",
+        "leaves_after_prune",
+        "literals_before_prune",
+        "literals_after_prune",
+        "validation_accuracy_before_prune",
+        "validation_accuracy_after_prune",
+        "candidate_count",
+        "candidate_pruned_count",
+        "branch_and_bound_fallback_count",
+        "predicate_mask_cache_hits",
+        "predicate_mask_cache_misses",
+        "candidate_cache_hits",
+        "candidate_cache_misses",
+        "subtree_cache_hits",
+        "subtree_cache_misses",
+        "parallel_threads",
+        "compatible_family_count",
+        "selected_family_counts",
+        "path_violation_count",
+        "max_axp_length",
+        "total_fit_time",
+        "search_time",
+        "pruning_time",
+        "axp_rerank_time",
+    ] {
+        assert!(
+            header.split(',').any(|column| column == required),
+            "missing {required}"
+        );
+    }
+    for artifact in [
+        "search_diagnostics.csv",
+        "pruning_diagnostics.csv",
+        "cache_diagnostics.csv",
+        "family_budget_diagnostics.csv",
+        "beam_diagnostics.csv",
+    ] {
+        assert!(output.join(artifact).exists(), "missing {artifact}");
+    }
     let _ = fs::remove_dir_all(base);
 }
 

@@ -76,6 +76,7 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         random_state: 1,
         n_runs: 1,
         train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
+        ..ResultRow::default()
     };
     assert!(theorem_table_filter(&base));
     assert!(!theorem_table_filter(&ResultRow {
@@ -94,6 +95,41 @@ fn theorem_filter_requires_allowed_backend_and_method() {
     assert!(!theorem_table_filter(&ResultRow {
         method: "best-certified".into(),
         ..base
+    }));
+}
+
+#[test]
+fn cals_theorem_filter_requires_the_complete_audit_boundary() {
+    let admitted = ResultRow {
+        method: "cals".into(),
+        theorem_certified: true,
+        language_family: LanguageFamily::SmartCertified,
+        backend: Backend::PathCertified,
+        path_certified: true,
+        path_backend: "StructuralHorn|Gf2Gaussian".into(),
+        all_predicates_backend_allowed: true,
+        ..ResultRow::default()
+    };
+    assert!(theorem_table_filter(&admitted));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_violation_count: 1,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        empirical_fallback_used: true,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        incompatible_cached_subtree_reused: true,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        all_predicates_backend_allowed: false,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_backend: "Affine".into(),
+        ..admitted
     }));
 }
 

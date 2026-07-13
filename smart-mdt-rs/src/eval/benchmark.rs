@@ -4,8 +4,8 @@ use crate::{
     explain::extract_axp_deletion,
     logic::{Backend, LanguageFamily},
     tree::{
-        learn, predict_all, tree_is_certified, tree_path_theory_metadata, CalsConfig,
-        LanguagePolicy, LearnerConfig,
+        learn_with_diagnostics, predict_all, tree_is_certified, tree_path_theory_metadata,
+        CalsConfig, LanguagePolicy, LearnerConfig, TreeNode,
     },
     Result, SmartMdtError,
 };
@@ -176,6 +176,67 @@ fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backen
     }
 }
 
+fn compatible_family_count_for_policy(policy: LanguagePolicy) -> usize {
+    match policy {
+        LanguagePolicy::SmartCertified => 5,
+        LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => 4,
+        _ => 1,
+    }
+}
+
+fn predicates_backend_allowed(tree: &TreeNode, training: &Dataset) -> bool {
+    match tree {
+        TreeNode::Leaf { .. } => true,
+        TreeNode::Internal {
+            predicate,
+            left,
+            right,
+            ..
+        } => {
+            predicate.language().theorem_table_allowed()
+                && (!matches!(predicate, crate::logic::Predicate::Affine { .. })
+                    || crate::data::predicate_scope_is_boolean(&training.features, predicate))
+                && !matches!(predicate, crate::logic::Predicate::EmpiricalAffine { .. })
+                && predicates_backend_allowed(left, training)
+                && predicates_backend_allowed(right, training)
+        }
+    }
+}
+
+fn theorem_rejection_reason(
+    theorem_certified: bool,
+    path_certified: bool,
+    predicates_allowed: bool,
+    empirical_fallback: bool,
+    incompatible_cache_reuse: bool,
+) -> String {
+    if theorem_certified
+        && path_certified
+        && predicates_allowed
+        && !empirical_fallback
+        && !incompatible_cache_reuse
+    {
+        return String::new();
+    }
+    let mut reasons = Vec::new();
+    if !theorem_certified {
+        reasons.push("AXp or tree theorem certification failed");
+    }
+    if !path_certified {
+        reasons.push("path theory compatibility failed");
+    }
+    if !predicates_allowed {
+        reasons.push("predicate backend or affine Boolean guard failed");
+    }
+    if empirical_fallback {
+        reasons.push("empirical fallback used");
+    }
+    if incompatible_cache_reuse {
+        reasons.push("incompatible cached subtree reused");
+    }
+    reasons.join("; ")
+}
+
 struct DatasetRunSpec<'a, P: AsRef<Path>> {
     dataset_name: &'a str,
     ds: &'a Dataset,
@@ -223,7 +284,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     }
                 };
                 let train_start = Instant::now();
-                let tree = learn(&train, &cfg)?;
+                let (tree, diagnostics) = learn_with_diagnostics(&train, &cfg)?;
                 let (path_theory_state, path_backend, path_certified) =
                     tree_path_theory_metadata(&tree);
                 let train_time = if measure_times {
@@ -241,25 +302,76 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 };
 
                 let axp_start = Instant::now();
-                let (mean_axp_length, theorem_certified) = if test.features.rows() == 0 {
-                    (0.0, path_certified)
-                } else {
-                    let limit = test.features.rows().min(8);
-                    let mut total = 0usize;
-                    let mut certified = path_certified && tree_is_certified(&tree);
-                    for row in 0..limit {
-                        let axp = extract_axp_deletion(&tree, &test.features, row, true);
-                        total += axp.features.len();
-                        certified &= axp.metadata.theorem_certified;
-                    }
-                    (total as f64 / limit as f64, certified)
-                };
+                let (mean_axp_length, max_axp_length, mut theorem_certified) =
+                    if test.features.rows() == 0 {
+                        (0.0, 0, path_certified)
+                    } else {
+                        let limit = test.features.rows().min(8);
+                        let mut total = 0usize;
+                        let mut maximum = 0usize;
+                        let mut certified = path_certified && tree_is_certified(&tree);
+                        for row in 0..limit {
+                            let axp = extract_axp_deletion(&tree, &test.features, row, true);
+                            total += axp.features.len();
+                            maximum = maximum.max(axp.features.len());
+                            certified &= axp.metadata.theorem_certified;
+                        }
+                        (total as f64 / limit as f64, maximum, certified)
+                    };
                 let axp_time = if measure_times {
                     axp_start.elapsed().as_secs_f64()
                 } else {
                     0.0
                 };
 
+                let all_predicates_backend_allowed = predicates_backend_allowed(&tree, &train);
+                theorem_certified &= all_predicates_backend_allowed;
+                let path_violation_count = usize::from(!path_certified);
+                let pruning = &diagnostics.pruning;
+                let nodes_before_prune = if pruning.enabled {
+                    pruning.nodes_before
+                } else {
+                    tree.nodes()
+                };
+                let leaves_before_prune = if pruning.enabled {
+                    pruning.leaves_before
+                } else {
+                    tree.leaves()
+                };
+                let literals_before_prune = if pruning.enabled {
+                    pruning.literals_before
+                } else {
+                    tree.literals()
+                };
+                let adaptive_candidate_count = diagnostics
+                    .adaptive_language
+                    .nodes
+                    .iter()
+                    .map(|node| node.candidates_generated)
+                    .sum::<usize>();
+                let candidate_count = adaptive_candidate_count
+                    .max(diagnostics.branch_and_bound.complete_candidates_evaluated);
+                let compatible_family_count = diagnostics
+                    .adaptive_language
+                    .nodes
+                    .iter()
+                    .map(|node| node.compatible_families.len())
+                    .max()
+                    .unwrap_or_else(|| compatible_family_count_for_policy(policy));
+                let selected_family_counts =
+                    format!("{:?}", diagnostics.adaptive_language.selected_family_counts);
+                let pruning_time = pruning.pruning_time_seconds;
+                let axp_rerank_time = diagnostics.axp_rerank.elapsed_seconds;
+                let search_time = (train_time - pruning_time - axp_rerank_time).max(0.0);
+                let empirical_fallback_used = false;
+                let incompatible_cached_subtree_reused = false;
+                let theorem_rejection_reason = theorem_rejection_reason(
+                    theorem_certified,
+                    path_certified,
+                    all_predicates_backend_allowed,
+                    empirical_fallback_used,
+                    incompatible_cached_subtree_reused,
+                );
                 rows.push(ResultRow {
                     dataset: dataset_name.to_string(),
                     run,
@@ -284,6 +396,49 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     random_state: seed.wrapping_add(run as u64),
                     n_runs: runs.len(),
                     train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
+                    search_strategy: format!("{:?}", cfg.tree_search.strategy),
+                    score_profile: format!("{:?}", cfg.split_score.profile),
+                    candidate_beam_width: if method == "cals" {
+                        cfg.tree_search.candidate_beam_width
+                    } else {
+                        cfg.beam_width
+                    },
+                    tree_beam_width: cfg.tree_search.tree_beam_width,
+                    lookahead_depth: cfg.tree_search.lookahead_depth,
+                    node_budget: cfg.tree_search.node_budget,
+                    pruning_enabled: pruning.enabled,
+                    nodes_before_prune,
+                    nodes_after_prune: tree.nodes(),
+                    leaves_before_prune,
+                    leaves_after_prune: tree.leaves(),
+                    literals_before_prune,
+                    literals_after_prune: tree.literals(),
+                    validation_accuracy_before_prune: pruning.validation_accuracy_before,
+                    validation_accuracy_after_prune: pruning.validation_accuracy_after,
+                    candidate_count,
+                    candidate_pruned_count: diagnostics.branch_and_bound.partial_states_pruned,
+                    branch_and_bound_fallback_count: diagnostics
+                        .branch_and_bound
+                        .exhaustive_fallback_count,
+                    predicate_mask_cache_hits: diagnostics.cache.predicate_masks.hits,
+                    predicate_mask_cache_misses: diagnostics.cache.predicate_masks.misses,
+                    candidate_cache_hits: diagnostics.cache.candidate_pools.hits,
+                    candidate_cache_misses: diagnostics.cache.candidate_pools.misses,
+                    subtree_cache_hits: diagnostics.cache.best_subtrees.hits,
+                    subtree_cache_misses: diagnostics.cache.best_subtrees.misses,
+                    parallel_threads: diagnostics.parallel.configured_threads,
+                    compatible_family_count,
+                    selected_family_counts,
+                    path_violation_count,
+                    max_axp_length,
+                    total_fit_time: train_time,
+                    search_time,
+                    pruning_time,
+                    axp_rerank_time,
+                    empirical_fallback_used,
+                    incompatible_cached_subtree_reused,
+                    all_predicates_backend_allowed,
+                    theorem_rejection_reason,
                 });
             }
         }
@@ -548,6 +703,7 @@ fn write_all_outputs(
     write_csv(output.as_ref().join("empirical_results.csv"), &emp)?;
     write_csv(output.as_ref().join("axp_metadata.csv"), rows)?;
     write_csv(output.as_ref().join("tuning_diagnostics.csv"), &emp)?;
+    write_optimization_diagnostics(output.as_ref(), rows)?;
     fs::write(
         output.as_ref().join("README_RESULTS.md"),
         format!(
@@ -555,6 +711,80 @@ fn write_all_outputs(
             rows.len()
         ),
     )?;
+    Ok(())
+}
+
+fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<()> {
+    let mut search = String::from("dataset,run,depth,method,search_strategy,score_profile,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,search_time,path_certified,path_violation_count\n");
+    let mut pruning = String::from("dataset,run,depth,method,pruning_enabled,nodes_before,nodes_after,leaves_before,leaves_after,literals_before,literals_after,validation_accuracy_before,validation_accuracy_after,pruning_time,path_certified\n");
+    let mut cache = String::from("dataset,run,depth,method,predicate_mask_hits,predicate_mask_misses,candidate_hits,candidate_misses,subtree_hits,subtree_misses,incompatible_subtree_reuse\n");
+    let mut family = String::from("dataset,run,depth,method,compatible_family_count,selected_family_counts,path_theory_state,path_backend\n");
+    let mut beam = String::from("dataset,run,depth,method,search_strategy,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,total_fit_time\n");
+    for row in rows {
+        let key = format!(
+            "{},{},{},{}",
+            csv_escape(&row.dataset),
+            row.run,
+            row.depth,
+            row.method
+        );
+        search.push_str(&format!(
+            "{key},{},{},{},{},{},{},{},{}\n",
+            row.search_strategy,
+            row.score_profile,
+            row.candidate_count,
+            row.candidate_pruned_count,
+            row.branch_and_bound_fallback_count,
+            row.search_time,
+            row.path_certified,
+            row.path_violation_count
+        ));
+        pruning.push_str(&format!(
+            "{key},{},{},{},{},{},{},{},{},{},{},{}\n",
+            row.pruning_enabled,
+            row.nodes_before_prune,
+            row.nodes_after_prune,
+            row.leaves_before_prune,
+            row.leaves_after_prune,
+            row.literals_before_prune,
+            row.literals_after_prune,
+            row.validation_accuracy_before_prune,
+            row.validation_accuracy_after_prune,
+            row.pruning_time,
+            row.path_certified
+        ));
+        cache.push_str(&format!(
+            "{key},{},{},{},{},{},{},{}\n",
+            row.predicate_mask_cache_hits,
+            row.predicate_mask_cache_misses,
+            row.candidate_cache_hits,
+            row.candidate_cache_misses,
+            row.subtree_cache_hits,
+            row.subtree_cache_misses,
+            row.incompatible_cached_subtree_reused
+        ));
+        family.push_str(&format!(
+            "{key},{},{},{},{}\n",
+            row.compatible_family_count,
+            csv_escape(&row.selected_family_counts),
+            csv_escape(&row.path_theory_state),
+            csv_escape(&row.path_backend)
+        ));
+        beam.push_str(&format!(
+            "{key},{},{},{},{},{},{}\n",
+            row.search_strategy,
+            row.candidate_beam_width,
+            row.tree_beam_width,
+            row.lookahead_depth,
+            row.node_budget,
+            row.total_fit_time
+        ));
+    }
+    fs::write(output.join("search_diagnostics.csv"), search)?;
+    fs::write(output.join("pruning_diagnostics.csv"), pruning)?;
+    fs::write(output.join("cache_diagnostics.csv"), cache)?;
+    fs::write(output.join("family_budget_diagnostics.csv"), family)?;
+    fs::write(output.join("beam_diagnostics.csv"), beam)?;
     Ok(())
 }
 
@@ -591,6 +821,7 @@ fn method_label(method: &str) -> &str {
         "square2cnf" => "Square2CNF",
         "affine" => "Affine",
         "smart_certified" => "Smart certified",
+        "cals" => "CALS-MDT",
         "best-certified" => "Best certified per node",
         other => other,
     }
@@ -609,7 +840,7 @@ fn path_certificate(backend: Backend) -> &'static str {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -619,10 +850,12 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
         let axp_rate = if r.theorem_certified { 1.0 } else { 0.0 };
         let n_success = usize::from(r.theorem_certified);
         let n_fail = usize::from(!r.theorem_certified);
-        let rejected_reason = if r.theorem_certified {
+        let rejected_reason = if theorem_table_filter(r) {
             ""
-        } else {
+        } else if r.theorem_rejection_reason.is_empty() {
             "not theorem-table eligible"
+        } else {
+            &r.theorem_rejection_reason
         };
         let fields = vec![
             csv_escape(&r.dataset),
@@ -663,6 +896,43 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.random_state.to_string(),
             r.n_runs.to_string(),
             r.train_test_split_protocol.clone(),
+            r.search_strategy.clone(),
+            r.score_profile.clone(),
+            r.candidate_beam_width.to_string(),
+            r.tree_beam_width.to_string(),
+            r.lookahead_depth.to_string(),
+            r.node_budget.to_string(),
+            r.pruning_enabled.to_string(),
+            r.nodes_before_prune.to_string(),
+            r.nodes_after_prune.to_string(),
+            r.leaves_before_prune.to_string(),
+            r.leaves_after_prune.to_string(),
+            r.literals_before_prune.to_string(),
+            r.literals_after_prune.to_string(),
+            r.validation_accuracy_before_prune.to_string(),
+            r.validation_accuracy_after_prune.to_string(),
+            r.candidate_count.to_string(),
+            r.candidate_pruned_count.to_string(),
+            r.branch_and_bound_fallback_count.to_string(),
+            r.predicate_mask_cache_hits.to_string(),
+            r.predicate_mask_cache_misses.to_string(),
+            r.candidate_cache_hits.to_string(),
+            r.candidate_cache_misses.to_string(),
+            r.subtree_cache_hits.to_string(),
+            r.subtree_cache_misses.to_string(),
+            r.parallel_threads.to_string(),
+            r.compatible_family_count.to_string(),
+            csv_escape(&r.selected_family_counts),
+            r.path_violation_count.to_string(),
+            r.max_axp_length.to_string(),
+            r.total_fit_time.to_string(),
+            r.search_time.to_string(),
+            r.pruning_time.to_string(),
+            r.axp_rerank_time.to_string(),
+            r.empirical_fallback_used.to_string(),
+            r.incompatible_cached_subtree_reused.to_string(),
+            r.all_predicates_backend_allowed.to_string(),
+            csv_escape(&r.theorem_rejection_reason),
         ];
         out.push_str(&fields.join(","));
         out.push('\n');

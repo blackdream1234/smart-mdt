@@ -28,6 +28,110 @@ pub struct ResultRow {
     pub random_state: u64,
     pub n_runs: usize,
     pub train_test_split_protocol: String,
+    pub search_strategy: String,
+    pub score_profile: String,
+    pub candidate_beam_width: usize,
+    pub tree_beam_width: usize,
+    pub lookahead_depth: usize,
+    pub node_budget: usize,
+    pub pruning_enabled: bool,
+    pub nodes_before_prune: usize,
+    pub nodes_after_prune: usize,
+    pub leaves_before_prune: usize,
+    pub leaves_after_prune: usize,
+    pub literals_before_prune: usize,
+    pub literals_after_prune: usize,
+    pub validation_accuracy_before_prune: f64,
+    pub validation_accuracy_after_prune: f64,
+    pub candidate_count: usize,
+    pub candidate_pruned_count: usize,
+    pub branch_and_bound_fallback_count: usize,
+    pub predicate_mask_cache_hits: usize,
+    pub predicate_mask_cache_misses: usize,
+    pub candidate_cache_hits: usize,
+    pub candidate_cache_misses: usize,
+    pub subtree_cache_hits: usize,
+    pub subtree_cache_misses: usize,
+    pub parallel_threads: usize,
+    pub compatible_family_count: usize,
+    pub selected_family_counts: String,
+    pub path_violation_count: usize,
+    pub max_axp_length: usize,
+    pub total_fit_time: f64,
+    pub search_time: f64,
+    pub pruning_time: f64,
+    pub axp_rerank_time: f64,
+    pub empirical_fallback_used: bool,
+    pub incompatible_cached_subtree_reused: bool,
+    pub all_predicates_backend_allowed: bool,
+    pub theorem_rejection_reason: String,
+}
+
+impl Default for ResultRow {
+    fn default() -> Self {
+        Self {
+            dataset: String::new(),
+            run: 0,
+            depth: 0,
+            method: String::new(),
+            accuracy: 0.0,
+            train_time: 0.0,
+            predict_time: 0.0,
+            tree_nodes: 0,
+            leaves: 0,
+            max_depth_reached: 0,
+            mean_axp_length: 0.0,
+            axp_time: 0.0,
+            theorem_certified: false,
+            language_family: LanguageFamily::Unary,
+            backend: Backend::None,
+            path_theory_state: String::new(),
+            path_backend: String::new(),
+            path_certified: false,
+            git_sha: String::new(),
+            config: String::new(),
+            random_state: 0,
+            n_runs: 0,
+            train_test_split_protocol: String::new(),
+            search_strategy: String::new(),
+            score_profile: String::new(),
+            candidate_beam_width: 0,
+            tree_beam_width: 0,
+            lookahead_depth: 0,
+            node_budget: 0,
+            pruning_enabled: false,
+            nodes_before_prune: 0,
+            nodes_after_prune: 0,
+            leaves_before_prune: 0,
+            leaves_after_prune: 0,
+            literals_before_prune: 0,
+            literals_after_prune: 0,
+            validation_accuracy_before_prune: 0.0,
+            validation_accuracy_after_prune: 0.0,
+            candidate_count: 0,
+            candidate_pruned_count: 0,
+            branch_and_bound_fallback_count: 0,
+            predicate_mask_cache_hits: 0,
+            predicate_mask_cache_misses: 0,
+            candidate_cache_hits: 0,
+            candidate_cache_misses: 0,
+            subtree_cache_hits: 0,
+            subtree_cache_misses: 0,
+            parallel_threads: 0,
+            compatible_family_count: 0,
+            selected_family_counts: String::new(),
+            path_violation_count: 0,
+            max_axp_length: 0,
+            total_fit_time: 0.0,
+            search_time: 0.0,
+            pruning_time: 0.0,
+            axp_rerank_time: 0.0,
+            empirical_fallback_used: false,
+            incompatible_cached_subtree_reused: false,
+            all_predicates_backend_allowed: false,
+            theorem_rejection_reason: String::new(),
+        }
+    }
 }
 /// True iff row is allowed in the theorem-certified table.
 ///
@@ -44,8 +148,25 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         "antihorn" => matches!(r.backend, Backend::StructuralAntiHorn),
         "square2cnf" => matches!(r.backend, Backend::TwoSat),
         "affine" => matches!(r.backend, Backend::Gf2Gaussian),
-        "smart_certified" | "cals" => {
+        "smart_certified" => {
             r.path_certified
+                && matches!(r.language_family, LanguageFamily::SmartCertified)
+                && matches!(r.backend, Backend::PathCertified)
+                && !r.path_backend.is_empty()
+                && r.path_backend.split('|').all(|backend| {
+                    matches!(
+                        backend,
+                        "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian"
+                    )
+                })
+        }
+        "cals" => {
+            r.path_certified
+                && r.path_violation_count == 0
+                && !r.empirical_fallback_used
+                && !r.incompatible_cached_subtree_reused
+                && r.all_predicates_backend_allowed
+                && r.theorem_rejection_reason.is_empty()
                 && matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
                 && !r.path_backend.is_empty()

@@ -169,6 +169,11 @@ fn candidates(
 fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
     let state_key = search_state_key(&node, cfg, cfg.tree_search.node_budget);
     if let Some(cached) = context.best_subtree_cached(&state_key) {
+        if cfg.theorem_mode && !cached.path_certified {
+            return Err(SmartMdtError::TheoremRejected(
+                "memoized subtree failed path certification".into(),
+            ));
+        }
         return Ok((*cached.tree).clone());
     }
     let statistics = context.node_statistics_cached(&state_key, &node)?;
