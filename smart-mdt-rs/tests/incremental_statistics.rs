@@ -174,10 +174,9 @@ fn candidate_signatures(mut candidates: Vec<SplitCandidate>) -> Vec<String> {
         .drain(..)
         .map(|candidate| {
             format!(
-                "{:?}|{}|{}|{}|{}",
+                "{:?}|{}|{}|{}",
                 candidate.predicate,
                 candidate.score.predictive_gain.to_bits(),
-                candidate.score.final_score.to_bits(),
                 candidate.left_count,
                 candidate.right_count
             )
@@ -214,7 +213,9 @@ fn masked_candidate_generation_matches_naive_materialized_subsets() {
             LanguagePolicy::AffineOnly => generate_affine(&naive, 1, beam),
             _ => unreachable!(),
         };
-        let actual = context.generate_candidates(&node, policy, 1, beam).unwrap();
+        let actual = context
+            .generate_candidates(&node, policy, 1, beam, &Default::default())
+            .unwrap();
         assert_eq!(
             candidate_signatures(actual),
             candidate_signatures(expected),

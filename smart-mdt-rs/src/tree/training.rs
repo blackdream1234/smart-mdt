@@ -6,7 +6,9 @@ use crate::{
     logic::{
         candidate_is_compatible, Literal, PathTheoryState, Predicate, ThresholdAtom, ThresholdOp,
     },
-    search::{final_score, information_gain, ScoreWeights, SplitCandidate},
+    search::{
+        gini, information_gain, score_split, SplitCandidate, SplitScoreConfig, SplitScoreInput,
+    },
     ClassId, FeatureId, Result,
 };
 use std::{
@@ -247,26 +249,39 @@ impl TrainingContext {
         &self,
         node: &NodeView,
         predicate: Predicate,
-        complexity: f64,
+        score_config: &SplitScoreConfig,
     ) -> Result<Option<(SplitCandidate, BitSet)>> {
         let (true_rows, false_rows) = self.split_masks(node, &predicate)?;
         let left = true_rows.count_ones();
         let right = false_rows.count_ones();
+        if left == 0 || right == 0 {
+            return Ok(None);
+        }
         let parent_counts = self.class_counts(node)?;
         let left_counts = self.child_class_counts(&true_rows)?;
         let right_counts = self.child_class_counts(&false_rows)?;
         let gain = information_gain(&parent_counts, &left_counts, &right_counts);
+        let total = left + right;
+        let fragmentation = 1.0 - 2.0 * left.min(right) as f64 / total as f64;
+        let estimated_subtree_cost =
+            (left as f64 * gini(&left_counts) + right as f64 * gini(&right_counts)) / total as f64;
+        let instability = (left as f64 / total as f64 - 0.5).abs() * 2.0;
         Ok(Some((
             SplitCandidate {
-                predicate,
-                score: final_score(
-                    gain,
-                    complexity,
-                    complexity,
-                    complexity,
-                    true,
-                    ScoreWeights::default(),
+                score: score_split(
+                    SplitScoreInput {
+                        information_gain: gain,
+                        true_count: left,
+                        false_count: right,
+                        literal_count: predicate.arity(),
+                        family: predicate.language(),
+                        fragmentation,
+                        estimated_subtree_cost,
+                        instability,
+                    },
+                    score_config,
                 ),
+                predicate,
                 left_count: left,
                 right_count: right,
             },
@@ -274,7 +289,27 @@ impl TrainingContext {
         )))
     }
 
-    fn ranked_literals(&self, node: &NodeView) -> Result<Vec<Literal>> {
+    /// Scores only candidates admissible under the node's current path theory.
+    /// Incompatible and degenerate candidates return before numerical scoring.
+    pub fn score_if_admissible(
+        &self,
+        node: &NodeView,
+        predicate: Predicate,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Option<crate::search::CandidateScore>> {
+        if !candidate_is_compatible(node.theory_state, &predicate) {
+            return Ok(None);
+        }
+        Ok(self
+            .score_candidate(node, predicate, score_config)?
+            .map(|(candidate, _)| candidate.score))
+    }
+
+    fn ranked_literals(
+        &self,
+        node: &NodeView,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<Literal>> {
         let mut literals = Vec::new();
         for feature in 0..self.dataset.features.cols() as FeatureId {
             let values = self.node_values(node, feature);
@@ -298,7 +333,7 @@ impl TrainingContext {
         let mut scored = Vec::with_capacity(literals.len());
         for literal in literals {
             let gain = self
-                .score_candidate(node, Predicate::Unary(literal), 1.0)?
+                .score_candidate(node, Predicate::Unary(literal), score_config)?
                 .map_or(f64::NEG_INFINITY, |(candidate, _)| {
                     candidate.score.predictive_gain
                 });
@@ -308,7 +343,12 @@ impl TrainingContext {
         Ok(scored.into_iter().map(|(literal, _)| literal).collect())
     }
 
-    fn generate_unary(&self, node: &NodeView, min_leaf: usize) -> Result<Vec<SplitCandidate>> {
+    fn generate_unary(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
         let mut output = Vec::new();
         for feature in 0..self.dataset.features.cols() as FeatureId {
             let values = self.node_values(node, feature);
@@ -322,7 +362,7 @@ impl TrainingContext {
                     },
                     positive: true,
                 });
-                if let Some((candidate, _)) = self.score_candidate(node, predicate, 1.0)? {
+                if let Some((candidate, _)) = self.score_candidate(node, predicate, score_config)? {
                     if candidate.left_count >= min_leaf && candidate.right_count >= min_leaf {
                         output.push(candidate);
                     }
@@ -338,9 +378,10 @@ impl TrainingContext {
         min_leaf: usize,
         beam: usize,
         horn: bool,
+        score_config: &SplitScoreConfig,
     ) -> Result<Vec<SplitCandidate>> {
         let selected: Vec<_> = self
-            .ranked_literals(node)?
+            .ranked_literals(node, score_config)?
             .into_iter()
             .take(beam.max(2))
             .collect();
@@ -367,7 +408,9 @@ impl TrainingContext {
                 } else {
                     Predicate::AntiHornClause(literals)
                 };
-                if let Some((candidate, mask)) = self.score_candidate(node, predicate, 2.0)? {
+                if let Some((candidate, mask)) =
+                    self.score_candidate(node, predicate, score_config)?
+                {
                     if candidate.left_count < min_leaf || candidate.right_count < min_leaf {
                         continue;
                     }
@@ -386,9 +429,10 @@ impl TrainingContext {
         node: &NodeView,
         min_leaf: usize,
         beam: usize,
+        score_config: &SplitScoreConfig,
     ) -> Result<Vec<SplitCandidate>> {
         let selected: Vec<_> = self
-            .ranked_literals(node)?
+            .ranked_literals(node, score_config)?
             .into_iter()
             .take(beam.max(4))
             .collect();
@@ -400,7 +444,7 @@ impl TrainingContext {
                 if !same_atom_opposite_polarity(a, b) {
                     let predicate = Predicate::Square2Cnf { a, b, c: a, d: b };
                     let gain = self
-                        .score_candidate(node, predicate, 4.0)?
+                        .score_candidate(node, predicate, score_config)?
                         .map_or(f64::NEG_INFINITY, |(candidate, _)| {
                             candidate.score.predictive_gain
                         });
@@ -419,6 +463,7 @@ impl TrainingContext {
                 Predicate::Square2Cnf { a, b, c: a, d: b },
                 &mut seen_masks,
                 &mut output,
+                score_config,
             )?;
             for &(c, d, _) in clauses.iter().skip(index + 1) {
                 self.consider_square(
@@ -427,6 +472,7 @@ impl TrainingContext {
                     Predicate::Square2Cnf { a, b, c, d },
                     &mut seen_masks,
                     &mut output,
+                    score_config,
                 )?;
             }
         }
@@ -441,8 +487,9 @@ impl TrainingContext {
         predicate: Predicate,
         seen_masks: &mut BTreeSet<Vec<u64>>,
         output: &mut Vec<SplitCandidate>,
+        score_config: &SplitScoreConfig,
     ) -> Result<()> {
-        if let Some((candidate, mask)) = self.score_candidate(node, predicate, 4.0)? {
+        if let Some((candidate, mask)) = self.score_candidate(node, predicate, score_config)? {
             if candidate.left_count >= min_leaf
                 && candidate.right_count >= min_leaf
                 && seen_masks.insert(mask.words().to_vec())
@@ -458,6 +505,7 @@ impl TrainingContext {
         node: &NodeView,
         min_leaf: usize,
         beam: usize,
+        score_config: &SplitScoreConfig,
     ) -> Result<Vec<SplitCandidate>> {
         let mut ranked = Vec::new();
         for feature in 0..self.dataset.features.cols() as FeatureId {
@@ -466,7 +514,7 @@ impl TrainingContext {
             }
             let predicate = Predicate::Unary(boolean_literal(feature));
             let gain = self
-                .score_candidate(node, predicate, 1.0)?
+                .score_candidate(node, predicate, score_config)?
                 .map_or(f64::NEG_INFINITY, |(candidate, _)| {
                     candidate.score.predictive_gain
                 });
@@ -494,7 +542,7 @@ impl TrainingContext {
                         rhs,
                     };
                     if let Some((candidate, mask)) =
-                        self.score_candidate(node, predicate, arity as f64)?
+                        self.score_candidate(node, predicate, score_config)?
                     {
                         if candidate.left_count >= min_leaf
                             && candidate.right_count >= min_leaf
@@ -517,40 +565,106 @@ impl TrainingContext {
         policy: LanguagePolicy,
         min_leaf: usize,
         beam: usize,
+        score_config: &SplitScoreConfig,
     ) -> Result<Vec<SplitCandidate>> {
         let mut output = Vec::new();
         match policy {
-            LanguagePolicy::UnaryOnly => output.extend(self.generate_unary(node, min_leaf)?),
-            LanguagePolicy::HornOnly => {
-                output.extend(self.generate_clause_family(node, min_leaf, beam, true)?)
+            LanguagePolicy::UnaryOnly => {
+                output.extend(self.generate_unary(node, min_leaf, score_config)?)
             }
-            LanguagePolicy::AntiHornOnly => {
-                output.extend(self.generate_clause_family(node, min_leaf, beam, false)?)
-            }
+            LanguagePolicy::HornOnly => output.extend(self.generate_clause_family(
+                node,
+                min_leaf,
+                beam,
+                true,
+                score_config,
+            )?),
+            LanguagePolicy::AntiHornOnly => output.extend(self.generate_clause_family(
+                node,
+                min_leaf,
+                beam,
+                false,
+                score_config,
+            )?),
             LanguagePolicy::Square2CnfOnly => {
-                output.extend(self.generate_square2cnf(node, min_leaf, beam)?)
+                output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?)
             }
             LanguagePolicy::AffineOnly => {
-                output.extend(self.generate_affine(node, min_leaf, beam)?)
+                output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
             }
             LanguagePolicy::SmartCertified => {
-                output.extend(self.generate_unary(node, min_leaf)?);
-                output.extend(self.generate_clause_family(node, min_leaf, beam, true)?);
-                output.extend(self.generate_clause_family(node, min_leaf, beam, false)?);
-                output.extend(self.generate_square2cnf(node, min_leaf, beam)?);
-                output.extend(self.generate_affine(node, min_leaf, beam)?);
-                output.retain(|candidate| {
-                    candidate_is_compatible(node.theory_state, &candidate.predicate)
-                });
+                // Compatibility is enforced before family generation and therefore
+                // before any candidate receives a numerical score.
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
+                match node.theory_state {
+                    PathTheoryState::Uncommitted => {
+                        output.extend(self.generate_clause_family(
+                            node,
+                            min_leaf,
+                            beam,
+                            true,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_clause_family(
+                            node,
+                            min_leaf,
+                            beam,
+                            false,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_square2cnf(
+                            node,
+                            min_leaf,
+                            beam,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?);
+                    }
+                    PathTheoryState::Horn => output.extend(self.generate_clause_family(
+                        node,
+                        min_leaf,
+                        beam,
+                        true,
+                        score_config,
+                    )?),
+                    PathTheoryState::AntiHorn => output.extend(self.generate_clause_family(
+                        node,
+                        min_leaf,
+                        beam,
+                        false,
+                        score_config,
+                    )?),
+                    PathTheoryState::TwoSat => output.extend(self.generate_square2cnf(
+                        node,
+                        min_leaf,
+                        beam,
+                        score_config,
+                    )?),
+                    PathTheoryState::AffineGf2 => {
+                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
+                    }
+                }
             }
             LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => {
-                output.extend(self.generate_unary(node, min_leaf)?);
-                output.extend(self.generate_clause_family(node, min_leaf, beam, true)?);
-                output.extend(self.generate_clause_family(node, min_leaf, beam, false)?);
-                output.extend(self.generate_square2cnf(node, min_leaf, beam)?);
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
+                output.extend(self.generate_clause_family(
+                    node,
+                    min_leaf,
+                    beam,
+                    true,
+                    score_config,
+                )?);
+                output.extend(self.generate_clause_family(
+                    node,
+                    min_leaf,
+                    beam,
+                    false,
+                    score_config,
+                )?);
+                output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?);
             }
             LanguagePolicy::EmpiricalMixed | LanguagePolicy::TunedExperimental => {
-                output.extend(self.generate_unary(node, min_leaf)?);
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
             }
         }
         Ok(output)

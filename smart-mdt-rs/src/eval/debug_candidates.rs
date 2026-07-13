@@ -7,7 +7,10 @@ use crate::{
     search::affine::{generate_affine, AffineConfig},
     search::antihorn::generate_antihorn,
     search::horn::generate_horn,
-    search::scoring::{final_score, gini, information_gain, CandidateScore, ScoreWeights},
+    search::scoring::{
+        canonical_predicate_key, gini, information_gain, score_split, CandidateScore,
+        SplitScoreConfig, SplitScoreInput,
+    },
     search::square2cnf::generate_square2cnf,
     search::unary::generate_unary,
     FeatureId, Result, SmartMdtError,
@@ -304,13 +307,31 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
         ""
     }
     .to_string();
-    let score = final_score(
-        gain,
-        predicate.arity() as f64,
-        0.0,
-        0.0,
-        theorem_certified,
-        ScoreWeights::default(),
+    let impurity_true = gini(&true_counts);
+    let impurity_false = gini(&false_counts);
+    let total = true_count + false_count;
+    let fragmentation = if total == 0 {
+        1.0
+    } else {
+        1.0 - 2.0 * true_count.min(false_count) as f64 / total as f64
+    };
+    let estimated_subtree_cost = if total == 0 {
+        0.0
+    } else {
+        (true_count as f64 * impurity_true + false_count as f64 * impurity_false) / total as f64
+    };
+    let score = score_split(
+        SplitScoreInput {
+            information_gain: gain,
+            true_count,
+            false_count,
+            literal_count: predicate.arity(),
+            family: predicate.language(),
+            fragmentation,
+            estimated_subtree_cost,
+            instability: fragmentation,
+        },
+        &SplitScoreConfig::default(),
     );
     CandidateDiagnostic {
         predicate,
@@ -320,14 +341,8 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
         true_counts,
         false_counts,
         impurity_parent: gini(&parent),
-        impurity_true: gini(&class_counts(&ds.labels, &mask, classes)),
-        impurity_false: gini(
-            &parent
-                .iter()
-                .zip(class_counts(&ds.labels, &mask, classes))
-                .map(|(a, b)| a - b)
-                .collect::<Vec<_>>(),
-        ),
+        impurity_true,
+        impurity_false,
         balance: true_count.min(false_count) as f64 / ds.labels.len().max(1) as f64,
         boolean_scope,
         theorem_certified,
@@ -344,17 +359,57 @@ fn write_candidates_csv(
     ds: &Dataset,
     candidates: &[CandidateDiagnostic],
 ) -> Result<()> {
-    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,path_theory_state,path_backend,path_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,final_score,rejected,rejected_reason,arity,rhs,boolean_scope\n");
+    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,path_theory_state,path_backend,path_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,score_profile,information_gain,gain_ratio,balance_component,literal_penalty,family_penalty,fragmentation_penalty,estimated_subtree_penalty,instability_penalty,final_score,canonical_tie_break_key,rejected,rejected_reason,arity,rhs,boolean_scope\n");
     let node_counts = counts_string(&ds.labels.iter().map(|&x| x as usize).collect::<Vec<_>>());
     for (rank, c) in candidates.iter().enumerate() {
         let candidate_id = format!("cand_{}", rank + 1);
-        out.push_str(&format!("{},{},{},{},{},{},{},{},{},{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv(&cfg.dataset), cfg.method, cfg.depth, csv(&cfg.node_path), ds.labels.len(), csv(&node_counts), rank + 1,
-            candidate_id, csv(&predicate_debug(&c.predicate)), c.predicate.language(), c.predicate.backend(), c.theorem_certified,
-            c.path_theory_state, c.path_backend, c.path_certified, c.true_count, c.false_count, csv(&usize_counts(&c.true_counts)), csv(&usize_counts(&c.false_counts)), c.impurity_parent,
-            c.impurity_true, c.impurity_false, c.score.predictive_gain, c.balance, c.predicate.arity(), c.score.predictive_gain,
-            c.score.certificate_bonus, c.score.final_score, c.rejected, csv(&c.rejected_reason),
-            c.predicate.arity(), affine_rhs_str(&c.predicate), c.boolean_scope));
+        let fields = vec![
+            csv(&cfg.dataset),
+            cfg.method.clone(),
+            cfg.depth.to_string(),
+            csv(&cfg.node_path),
+            ds.labels.len().to_string(),
+            csv(&node_counts),
+            (rank + 1).to_string(),
+            candidate_id,
+            csv(&predicate_debug(&c.predicate)),
+            format!("{:?}", c.predicate.language()),
+            format!("{:?}", c.predicate.backend()),
+            c.theorem_certified.to_string(),
+            c.path_theory_state.clone(),
+            c.path_backend.clone(),
+            c.path_certified.to_string(),
+            c.true_count.to_string(),
+            c.false_count.to_string(),
+            csv(&usize_counts(&c.true_counts)),
+            csv(&usize_counts(&c.false_counts)),
+            c.impurity_parent.to_string(),
+            c.impurity_true.to_string(),
+            c.impurity_false.to_string(),
+            c.score.predictive_gain.to_string(),
+            c.balance.to_string(),
+            c.predicate.arity().to_string(),
+            c.score.predictive_gain.to_string(),
+            c.score.certificate_bonus.to_string(),
+            format!("{:?}", c.score.score_profile),
+            c.score.predictive_gain.to_string(),
+            c.score.gain_ratio.to_string(),
+            c.score.balance_component.to_string(),
+            c.score.literal_penalty.to_string(),
+            c.score.family_penalty.to_string(),
+            c.score.fragmentation_penalty.to_string(),
+            c.score.estimated_subtree_penalty.to_string(),
+            c.score.instability_penalty.to_string(),
+            c.score.final_score.to_string(),
+            csv(&canonical_predicate_key(&c.predicate)),
+            c.rejected.to_string(),
+            csv(&c.rejected_reason),
+            c.predicate.arity().to_string(),
+            affine_rhs_str(&c.predicate),
+            c.boolean_scope.to_string(),
+        ];
+        out.push_str(&fields.join(","));
+        out.push('\n');
     }
     fs::write(cfg.output.join("debug_candidates.csv"), out)?;
     Ok(())

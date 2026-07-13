@@ -2,7 +2,7 @@ use super::{NodeView, TrainingContext, TrainingDiagnostics, TreeNode};
 use crate::{
     data::Dataset,
     logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
-    search::{top_k, SplitCandidate},
+    search::{top_k_with_config, SplitCandidate, SplitScoreConfig},
     Result, SmartMdtError,
 };
 use std::sync::Arc;
@@ -30,6 +30,7 @@ pub struct LearnerConfig {
     pub min_samples_leaf: usize,
     pub max_candidates_per_node: usize,
     pub beam_width: usize,
+    pub split_score: SplitScoreConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -42,6 +43,7 @@ impl Default for LearnerConfig {
             min_samples_leaf: 1,
             max_candidates_per_node: 64,
             beam_width: 8,
+            split_score: SplitScoreConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -82,12 +84,17 @@ fn candidates(
         cfg.language_policy,
         cfg.min_samples_leaf,
         cfg.beam_width,
+        &cfg.split_score,
     )?;
     if cfg.language_policy == LanguagePolicy::SmartCertified {
         generated
             .retain(|candidate| candidate_is_compatible(node.theory_state, &candidate.predicate));
     }
-    Ok(top_k(generated, cfg.max_candidates_per_node))
+    Ok(top_k_with_config(
+        generated,
+        cfg.max_candidates_per_node,
+        &cfg.split_score,
+    ))
 }
 fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
     let sample_count = context.sample_count(&node);
