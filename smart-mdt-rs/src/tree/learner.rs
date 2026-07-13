@@ -1,7 +1,8 @@
 use super::{
-    predict_row, BeamSearchDiagnostics, CacheConfig, CachedSubtree, FrontierLeaf, NodeView,
-    ParallelConfig, PartialTree, PartialTreeState, SearchStateKey, TrainingContext,
-    TrainingDiagnostics, TreeNode, TreeSearchConfig, TreeSearchStrategy,
+    deterministic_pruning_split, predict_row, prune_with_validation, BeamSearchDiagnostics,
+    CacheConfig, CachedSubtree, FrontierLeaf, NodeView, ParallelConfig, PartialTree,
+    PartialTreeState, PruningConfig, SearchStateKey, TrainingContext, TrainingDiagnostics,
+    TreeNode, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -41,6 +42,7 @@ pub struct LearnerConfig {
     pub cache: CacheConfig,
     pub tree_search: TreeSearchConfig,
     pub parallel: ParallelConfig,
+    pub pruning: PruningConfig,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -58,6 +60,7 @@ impl Default for LearnerConfig {
             cache: CacheConfig::default(),
             tree_search: TreeSearchConfig::default(),
             parallel: ParallelConfig::default(),
+            pruning: PruningConfig::default(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -84,12 +87,31 @@ pub fn learn_with_diagnostics(
             "empirical policy in theorem mode".into(),
         ));
     }
-    let context = TrainingContext::with_cache_config(Arc::new(data.clone()), cfg.cache.clone());
-    let tree = match cfg.tree_search.strategy {
+    let pruning_split = if cfg.pruning.enabled {
+        deterministic_pruning_split(data, cfg.pruning.validation_fraction, cfg.random_seed).ok()
+    } else {
+        None
+    };
+    let grow_data = pruning_split
+        .as_ref()
+        .map_or_else(|| data.clone(), |split| split.grow.clone());
+    let context = TrainingContext::with_cache_config(Arc::new(grow_data), cfg.cache.clone());
+    let grown_tree = match cfg.tree_search.strategy {
         TreeSearchStrategy::Greedy => build(&context, cfg, context.root_view())?,
         TreeSearchStrategy::SparseLookahead | TreeSearchStrategy::GlobalBeam => {
             build_with_tree_search(&context, cfg)?
         }
+    };
+    let tree = if let Some(split) = pruning_split {
+        let (tree, mut diagnostics) =
+            prune_with_validation(&grown_tree, &split.validation, &cfg.pruning);
+        diagnostics.grow_samples = split.grow.labels.len();
+        diagnostics.validation_samples = split.validation.labels.len();
+        diagnostics.validation_indices = split.validation_indices;
+        context.record_pruning(diagnostics);
+        tree
+    } else {
+        grown_tree
     };
     Ok((tree, context.diagnostics()))
 }
@@ -216,7 +238,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?}",
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?}",
             cfg.language_policy,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
@@ -225,6 +247,7 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
             cfg.branch_and_bound,
             cfg.tree_search,
             cfg.parallel,
+            cfg.pruning,
         ),
     )
 }

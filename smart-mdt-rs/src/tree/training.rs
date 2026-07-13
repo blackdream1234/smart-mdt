@@ -3,7 +3,7 @@
 use super::{
     BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
     CandidatePoolCache, LanguagePolicy, LookaheadCache, NodeStatistics, NodeStatisticsCache,
-    ParallelConfig, ParallelDiagnostics, SearchStateKey,
+    ParallelConfig, ParallelDiagnostics, PruningDiagnostics, SearchStateKey,
 };
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
@@ -55,6 +55,7 @@ pub struct TrainingDiagnostics {
     pub cache: CacheDiagnostics,
     pub beam_search: BeamSearchDiagnostics,
     pub parallel: ParallelDiagnostics,
+    pub pruning: PruningDiagnostics,
 }
 
 #[derive(Debug, Default)]
@@ -85,6 +86,7 @@ pub struct TrainingContext {
     branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
     beam_search_diagnostics: RwLock<BeamSearchDiagnostics>,
     parallel_diagnostics: RwLock<ParallelDiagnostics>,
+    pruning_diagnostics: RwLock<PruningDiagnostics>,
 }
 
 impl TrainingContext {
@@ -137,6 +139,7 @@ impl TrainingContext {
             branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
             beam_search_diagnostics: RwLock::new(BeamSearchDiagnostics::default()),
             parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
+            pruning_diagnostics: RwLock::new(PruningDiagnostics::default()),
         }
     }
 
@@ -293,6 +296,11 @@ impl TrainingContext {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            pruning: self
+                .pruning_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         }
     }
 
@@ -310,6 +318,13 @@ impl TrainingContext {
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
+    }
+
+    pub fn record_pruning(&self, diagnostics: PruningDiagnostics) {
+        *self
+            .pruning_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
     }
 
     pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {

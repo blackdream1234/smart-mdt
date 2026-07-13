@@ -13,5 +13,6 @@ pub use learner::*;
 pub use node::*;
 pub use parallel::*;
 pub use predict::*;
+pub use prune::*;
 pub use training::*;
 pub use tree_search::*;
