@@ -1,13 +1,11 @@
-use super::TreeNode;
+use super::{NodeView, TrainingContext, TrainingDiagnostics, TreeNode};
 use crate::{
-    data::{ColumnMajorMatrix, Dataset},
+    data::Dataset,
     logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
-    search::{
-        affine::generate_affine, antihorn::generate_antihorn, horn::generate_horn,
-        square2cnf::generate_square2cnf, top_k, unary::generate_unary, SplitCandidate,
-    },
-    ClassId, Result, SmartMdtError,
+    search::{top_k, SplitCandidate},
+    Result, SmartMdtError,
 };
+use std::sync::Arc;
 /// Language policy for learner search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguagePolicy {
@@ -52,6 +50,14 @@ impl Default for LearnerConfig {
 }
 /// Learns a CGS-MDT tree.
 pub fn learn(data: &Dataset, cfg: &LearnerConfig) -> Result<TreeNode> {
+    learn_with_diagnostics(data, cfg).map(|(tree, _)| tree)
+}
+
+/// Learns a tree and returns incremental-training diagnostics for this fit.
+pub fn learn_with_diagnostics(
+    data: &Dataset,
+    cfg: &LearnerConfig,
+) -> Result<(TreeNode, TrainingDiagnostics)> {
     if cfg.theorem_mode
         && matches!(
             cfg.language_policy,
@@ -62,111 +68,45 @@ pub fn learn(data: &Dataset, cfg: &LearnerConfig) -> Result<TreeNode> {
             "empirical policy in theorem mode".into(),
         ));
     }
-    build(data, cfg, 0, PathTheoryState::Uncommitted)
-}
-fn majority(labels: &[ClassId]) -> ClassId {
-    let mut m = std::collections::BTreeMap::new();
-    for &l in labels {
-        *m.entry(l).or_insert(0usize) += 1;
-    }
-    m.into_iter()
-        .max_by_key(|(_, c)| *c)
-        .map(|(l, _)| l)
-        .unwrap_or(0)
-}
-fn subset(data: &Dataset, rows: &[usize]) -> Result<Dataset> {
-    let matrix_rows: Vec<Vec<f64>> = rows
-        .iter()
-        .map(|&i| {
-            (0..data.features.cols())
-                .map(|j| data.features.get(i, j as u32))
-                .collect()
-        })
-        .collect();
-    let labels = rows.iter().map(|&i| data.labels[i]).collect();
-    Dataset::new(ColumnMajorMatrix::from_rows(&matrix_rows)?, labels)
+    let context = TrainingContext::new(Arc::new(data.clone()));
+    let tree = build(&context, cfg, context.root_view())?;
+    Ok((tree, context.diagnostics()))
 }
 fn candidates(
-    data: &Dataset,
+    context: &TrainingContext,
+    node: &NodeView,
     cfg: &LearnerConfig,
-    path_state: PathTheoryState,
-) -> Vec<SplitCandidate> {
-    let mut xs = Vec::new();
-    match cfg.language_policy {
-        LanguagePolicy::UnaryOnly => xs.extend(generate_unary(data, cfg.min_samples_leaf)),
-        LanguagePolicy::HornOnly => {
-            xs.extend(generate_horn(data, cfg.min_samples_leaf, cfg.beam_width))
-        }
-        LanguagePolicy::AntiHornOnly => xs.extend(generate_antihorn(
-            data,
-            cfg.min_samples_leaf,
-            cfg.beam_width,
-        )),
-        LanguagePolicy::Square2CnfOnly => xs.extend(generate_square2cnf(
-            data,
-            cfg.min_samples_leaf,
-            cfg.beam_width,
-        )),
-        LanguagePolicy::AffineOnly => {
-            xs.extend(generate_affine(data, cfg.min_samples_leaf, cfg.beam_width))
-        }
-        LanguagePolicy::SmartCertified => {
-            xs.extend(generate_unary(data, cfg.min_samples_leaf));
-            xs.extend(generate_horn(data, cfg.min_samples_leaf, cfg.beam_width));
-            xs.extend(generate_antihorn(
-                data,
-                cfg.min_samples_leaf,
-                cfg.beam_width,
-            ));
-            xs.extend(generate_square2cnf(
-                data,
-                cfg.min_samples_leaf,
-                cfg.beam_width,
-            ));
-            xs.extend(generate_affine(data, cfg.min_samples_leaf, cfg.beam_width));
-            xs.retain(|candidate| candidate_is_compatible(path_state, &candidate.predicate));
-        }
-        LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => {
-            xs.extend(generate_unary(data, cfg.min_samples_leaf));
-            xs.extend(generate_horn(data, cfg.min_samples_leaf, cfg.beam_width));
-            xs.extend(generate_antihorn(
-                data,
-                cfg.min_samples_leaf,
-                cfg.beam_width,
-            ));
-            xs.extend(generate_square2cnf(
-                data,
-                cfg.min_samples_leaf,
-                cfg.beam_width,
-            ));
-        }
-        LanguagePolicy::EmpiricalMixed | LanguagePolicy::TunedExperimental => {
-            xs.extend(generate_unary(data, cfg.min_samples_leaf))
-        }
+) -> Result<Vec<SplitCandidate>> {
+    let mut generated = context.generate_candidates(
+        node,
+        cfg.language_policy,
+        cfg.min_samples_leaf,
+        cfg.beam_width,
+    )?;
+    if cfg.language_policy == LanguagePolicy::SmartCertified {
+        generated
+            .retain(|candidate| candidate_is_compatible(node.theory_state, &candidate.predicate));
     }
-    top_k(xs, cfg.max_candidates_per_node)
+    Ok(top_k(generated, cfg.max_candidates_per_node))
 }
-fn build(
-    data: &Dataset,
-    cfg: &LearnerConfig,
-    depth: usize,
-    path_state: PathTheoryState,
-) -> Result<TreeNode> {
-    let maj = majority(&data.labels);
-    if depth >= cfg.max_depth
-        || data.labels.len() < cfg.min_samples_split
-        || data.labels.iter().all(|&l| l == data.labels[0])
+fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
+    let sample_count = context.sample_count(&node);
+    let class_counts = context.class_counts(&node)?;
+    let majority_class = context.majority_class(&node)?;
+    if node.depth >= cfg.max_depth
+        || sample_count < cfg.min_samples_split
+        || class_counts.iter().filter(|&&count| count > 0).count() <= 1
     {
         return Ok(TreeNode::Leaf {
-            class: maj,
-            samples: data.labels.len(),
+            class: majority_class,
+            samples: sample_count,
         });
     }
-    let cand = candidates(data, cfg, path_state);
+    let cand = candidates(context, &node, cfg)?;
     let Some(best) = cand.into_iter().next() else {
         return Ok(TreeNode::Leaf {
-            class: maj,
-            samples: data.labels.len(),
+            class: majority_class,
+            samples: sample_count,
         });
     };
     if cfg.theorem_mode && !best.predicate.language().theorem_table_allowed() {
@@ -174,29 +114,38 @@ fn build(
             "non-certified predicate selected".into(),
         ));
     }
-    let mut lrows = Vec::new();
-    let mut rrows = Vec::new();
-    for i in 0..data.labels.len() {
-        if best.predicate.eval(&data.features, i) {
-            lrows.push(i)
-        } else {
-            rrows.push(i)
-        }
-    }
+    let (left_rows, right_rows) = context.split_masks(&node, &best.predicate)?;
     let child_state = if cfg.language_policy == LanguagePolicy::SmartCertified {
-        next_theory_state(path_state, &best.predicate)?
+        next_theory_state(node.theory_state, &best.predicate)?
     } else {
-        path_state
+        node.theory_state
     };
     // Each recursive call receives its own copy, so descendants of one branch
     // cannot commit the sibling branch to a theory.
-    let left = build(&subset(data, &lrows)?, cfg, depth + 1, child_state)?;
-    let right = build(&subset(data, &rrows)?, cfg, depth + 1, child_state)?;
+    context.record_child_views();
+    let left = build(
+        context,
+        cfg,
+        NodeView {
+            rows: left_rows,
+            depth: node.depth + 1,
+            theory_state: child_state,
+        },
+    )?;
+    let right = build(
+        context,
+        cfg,
+        NodeView {
+            rows: right_rows,
+            depth: node.depth + 1,
+            theory_state: child_state,
+        },
+    )?;
     Ok(TreeNode::Internal {
         predicate: best.predicate,
         left: Box::new(left),
         right: Box::new(right),
-        majority_class: maj,
+        majority_class,
     })
 }
 /// Returns the distinct theory states reached by certified root-to-leaf paths.
