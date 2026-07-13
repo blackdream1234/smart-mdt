@@ -2,6 +2,7 @@
 pub mod adaptive;
 pub mod axp_rerank;
 pub mod cache;
+pub mod cals;
 pub mod learner;
 pub mod node;
 pub mod parallel;
@@ -13,6 +14,7 @@ pub mod tree_search;
 pub use adaptive::*;
 pub use axp_rerank::*;
 pub use cache::*;
+pub use cals::*;
 pub use learner::*;
 pub use node::*;
 pub use parallel::*;

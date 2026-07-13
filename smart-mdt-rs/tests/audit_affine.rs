@@ -273,6 +273,7 @@ fn affine_appears_only_in_certified_table_with_gf2_backend() {
         output: out.clone(),
         seed: 42,
         strict_data_checks: false,
+        cals: Default::default(),
     };
     run_full_benchmark(&cfg).unwrap();
 

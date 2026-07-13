@@ -44,7 +44,7 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         "antihorn" => matches!(r.backend, Backend::StructuralAntiHorn),
         "square2cnf" => matches!(r.backend, Backend::TwoSat),
         "affine" => matches!(r.backend, Backend::Gf2Gaussian),
-        "smart_certified" => {
+        "smart_certified" | "cals" => {
             r.path_certified
                 && matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)

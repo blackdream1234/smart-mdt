@@ -4,8 +4,8 @@ use crate::{
     explain::extract_axp_deletion,
     logic::{Backend, LanguageFamily},
     tree::{
-        learn, predict_all, tree_is_certified, tree_path_theory_metadata, LanguagePolicy,
-        LearnerConfig,
+        learn, predict_all, tree_is_certified, tree_path_theory_metadata, CalsConfig,
+        LanguagePolicy, LearnerConfig,
     },
     Result, SmartMdtError,
 };
@@ -32,6 +32,8 @@ pub struct BenchmarkConfig {
     pub seed: u64,
     /// Fail on data leakage or invalid dataset metadata instead of warning/skipping.
     pub strict_data_checks: bool,
+    /// Unified settings used only by the `cals` method.
+    pub cals: CalsConfig,
 }
 
 /// Runs a quick deterministic synthetic benchmark and writes CSV artifacts.
@@ -45,6 +47,7 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
     let y = vec![0, 0, 1, 1];
     let ds = Dataset::new(ColumnMajorMatrix::from_rows(&rows)?, y)?;
     let methods = default_methods();
+    let cals = CalsConfig::default();
     run_dataset_methods(DatasetRunSpec {
         dataset_name: "synthetic_quick",
         ds: &ds,
@@ -54,6 +57,7 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
         output,
         seed: 42,
         measure_times: false,
+        cals: &cals,
     })
 }
 
@@ -88,6 +92,7 @@ pub fn run_full_benchmark(cfg: &BenchmarkConfig) -> Result<Vec<ResultRow>> {
             output: &cfg.output,
             seed: cfg.seed,
             measure_times: true,
+            cals: &cfg.cals,
         })?;
         collect_result_warnings(&rows, &mut warnings);
         all_rows.append(&mut rows);
@@ -157,6 +162,11 @@ fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backen
             LanguageFamily::SmartCertified,
             Backend::PathCertified,
         )),
+        "cals" => Some((
+            LanguagePolicy::SmartCertified,
+            LanguageFamily::SmartCertified,
+            Backend::PathCertified,
+        )),
         "best-certified" => Some((
             LanguagePolicy::BestCertifiedPerNode,
             LanguageFamily::Unary,
@@ -175,6 +185,7 @@ struct DatasetRunSpec<'a, P: AsRef<Path>> {
     output: P,
     seed: u64,
     measure_times: bool,
+    cals: &'a CalsConfig,
 }
 
 fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Vec<ResultRow>> {
@@ -187,6 +198,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
         output,
         seed,
         measure_times,
+        cals,
     } = spec;
     fs::create_dir_all(&output)?;
     let git_sha = git_sha();
@@ -199,11 +211,16 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 else {
                     continue;
                 };
-                let cfg = LearnerConfig {
-                    max_depth: depth,
-                    language_policy: policy,
-                    random_seed: seed.wrapping_add(run as u64),
-                    ..LearnerConfig::default()
+                let random_seed = seed.wrapping_add(run as u64);
+                let cfg = if method == "cals" {
+                    cals.learner_config(depth, random_seed)
+                } else {
+                    LearnerConfig {
+                        max_depth: depth,
+                        language_policy: policy,
+                        random_seed,
+                        ..LearnerConfig::default()
+                    }
                 };
                 let train_start = Instant::now();
                 let tree = learn(&train, &cfg)?;

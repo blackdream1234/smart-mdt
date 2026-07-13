@@ -3,8 +3,9 @@ use smart_mdt_rs::{
     eval::{
         run_debug_candidates, run_full_benchmark, run_quick, BenchmarkConfig, DebugCandidateConfig,
     },
+    search::{SplitScoreConfig, SplitScoreProfile},
     tree::serialize::to_json,
-    tree::{learn, LanguagePolicy, LearnerConfig},
+    tree::{learn, CalsConfig, LanguagePolicy, LearnerConfig, TreeSearchStrategy},
     Result,
 };
 use std::path::PathBuf;
@@ -25,8 +26,109 @@ fn policy(s: &str) -> LanguagePolicy {
         "square2cnf" => LanguagePolicy::Square2CnfOnly,
         "affine" => LanguagePolicy::AffineOnly,
         "smart_certified" => LanguagePolicy::SmartCertified,
+        "cals" => LanguagePolicy::SmartCertified,
         _ => LanguagePolicy::BestCertifiedPerNode,
     }
+}
+
+fn cals_config(args: &[String]) -> CalsConfig {
+    let mut config = CalsConfig::thesis();
+    if let Some(strategy) = arg(args, "--tree-search") {
+        config.tree_search.strategy = match strategy.as_str() {
+            "greedy" => TreeSearchStrategy::Greedy,
+            "beam" => TreeSearchStrategy::GlobalBeam,
+            _ => TreeSearchStrategy::SparseLookahead,
+        };
+    }
+    if let Some(width) = arg(args, "--tree-beam-width").and_then(|value| value.parse().ok()) {
+        config.tree_search.tree_beam_width = width;
+    }
+    if let Some(width) = arg(args, "--candidate-beam-width").and_then(|value| value.parse().ok()) {
+        config.tree_search.candidate_beam_width = width;
+    }
+    if let Some(depth) = arg(args, "--lookahead-depth").and_then(|value| value.parse().ok()) {
+        config.tree_search.lookahead_depth = depth;
+    }
+    if let Some(budget) = arg(args, "--node-budget").and_then(|value| value.parse().ok()) {
+        config.tree_search.node_budget = budget;
+    }
+    if let Some(budget) = arg(args, "--time-budget-ms").and_then(|value| value.parse().ok()) {
+        config.tree_search.time_budget_ms = Some(budget);
+    }
+    if let Some(profile) = arg(args, "--score-profile") {
+        config.scoring = match profile.as_str() {
+            "information-gain" => SplitScoreConfig::information_gain(),
+            "gain-ratio" => SplitScoreConfig::gain_ratio(),
+            "lookahead-ready" => SplitScoreConfig::lookahead_ready(),
+            _ => SplitScoreConfig::sparse_certified(),
+        };
+        debug_assert!(matches!(
+            config.scoring.profile,
+            SplitScoreProfile::InformationGain
+                | SplitScoreProfile::GainRatio
+                | SplitScoreProfile::SparseCertified
+                | SplitScoreProfile::LookaheadReady
+        ));
+    }
+    if has_flag(args, "--branch-and-bound") {
+        config.branch_and_bound.enabled = true;
+    }
+    if has_flag(args, "--no-branch-and-bound") {
+        config.branch_and_bound.enabled = false;
+    }
+    if has_flag(args, "--cache") {
+        config.cache.enabled = true;
+    }
+    if has_flag(args, "--no-cache") {
+        config.cache.enabled = false;
+    }
+    if let Some(entries) = arg(args, "--cache-max-entries").and_then(|value| value.parse().ok()) {
+        config.cache.max_entries = entries;
+    }
+    if has_flag(args, "--parallel") {
+        config.parallel.enabled = true;
+    }
+    if has_flag(args, "--no-parallel") {
+        config.parallel.enabled = false;
+    }
+    if let Some(threads) = arg(args, "--threads").and_then(|value| value.parse().ok()) {
+        config.parallel.enabled = true;
+        config.parallel.threads = Some(threads);
+    }
+    if has_flag(args, "--adaptive-language") {
+        config.adaptive_language.enabled = true;
+    }
+    if has_flag(args, "--no-adaptive-language") {
+        config.adaptive_language.enabled = false;
+    }
+    if has_flag(args, "--prune") {
+        config.pruning.enabled = true;
+    }
+    if has_flag(args, "--no-prune") {
+        config.pruning.enabled = false;
+    }
+    if let Some(value) = arg(args, "--prune-validation-fraction").and_then(|v| v.parse().ok()) {
+        config.pruning.validation_fraction = value;
+    }
+    if let Some(value) = arg(args, "--prune-alpha-nodes").and_then(|v| v.parse().ok()) {
+        config.pruning.alpha_nodes = value;
+    }
+    if let Some(value) = arg(args, "--prune-alpha-leaves").and_then(|v| v.parse().ok()) {
+        config.pruning.alpha_leaves = value;
+    }
+    if let Some(value) = arg(args, "--prune-alpha-literals").and_then(|v| v.parse().ok()) {
+        config.pruning.alpha_literals = value;
+    }
+    if let Some(value) = arg(args, "--accuracy-epsilon").and_then(|v| v.parse().ok()) {
+        config.pruning.accuracy_epsilon = value;
+    }
+    if has_flag(args, "--axp-rerank") {
+        config.axp_rerank.enabled = true;
+    }
+    if let Some(size) = arg(args, "--axp-shortlist").and_then(|value| value.parse().ok()) {
+        config.axp_rerank.shortlist_size = size;
+    }
+    config
 }
 
 fn parse_usize_list(s: &str) -> Vec<usize> {
@@ -53,10 +155,14 @@ fn main() -> Result<()> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5);
             let ds = Dataset::from_dl8_like(data)?;
-            let cfg = LearnerConfig {
-                max_depth,
-                language_policy: policy(&method),
-                ..LearnerConfig::default()
+            let cfg = if method == "cals" {
+                cals_config(&args).learner_config(max_depth, 42)
+            } else {
+                LearnerConfig {
+                    max_depth,
+                    language_policy: policy(&method),
+                    ..LearnerConfig::default()
+                }
             };
             let tree = learn(&ds, &cfg)?;
             println!("{}", to_json(&tree)?);
@@ -100,6 +206,7 @@ fn main() -> Result<()> {
                     output,
                     seed,
                     strict_data_checks: has_flag(&args, "--strict-data-checks"),
+                    cals: cals_config(&args),
                 };
                 let rows = run_full_benchmark(&cfg)?;
                 println!("wrote {} dataset benchmark rows", rows.len());
