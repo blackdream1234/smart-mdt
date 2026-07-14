@@ -36,9 +36,9 @@ Use distinct output directories and one configuration change at a time:
   --no-parallel --no-adaptive-language --no-prune`.
 - C: B plus `--branch-and-bound`.
 - D: C plus `--cache`.
-- E: D plus `--tree-search lookahead --lookahead-depth 2`.
+- E: D plus `--tree-search sparse-lookahead --lookahead-depth 2`.
 - F: E plus `--prune`.
-- G: full CALS with `--cals-profile thesis --axp-rerank`.
+- G: full CALS with `--axp-rerank`.
 - H: full CALS without AXp reranking: the default thesis profile.
 - I: full CALS with `--no-parallel`.
 - J: full CALS with `--parallel`.

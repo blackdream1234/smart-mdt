@@ -1147,16 +1147,39 @@ impl TrainingContext {
             );
         }
         let policies = generation_policies(policy, node.theory_state);
-        let mut pilot_batches = Vec::with_capacity(policies.len());
-        let mut pilots = Vec::with_capacity(policies.len());
-        for &family_policy in &policies {
-            let mut candidates = self.generate_candidates(
+        // Reuse the deterministic parallel family evaluator for the pilot.
+        // Results are regrouped by family below, so completion order cannot
+        // influence utilities or budget allocation.
+        let parallel_pilot = if parallel.enabled && parallel.parallel_candidates {
+            Some(self.generate_candidates_parallel(
                 node,
-                family_policy,
+                policy,
                 min_leaf,
                 adaptive.pilot_candidates_per_family.max(1),
                 score_config,
-            )?;
+                parallel,
+            )?)
+        } else {
+            None
+        };
+        let mut pilot_batches = Vec::with_capacity(policies.len());
+        let mut pilots = Vec::with_capacity(policies.len());
+        for &family_policy in &policies {
+            let family = family_for_policy(family_policy);
+            let mut candidates = if let Some(all) = &parallel_pilot {
+                all.iter()
+                    .filter(|candidate| candidate.predicate.language() == family)
+                    .cloned()
+                    .collect()
+            } else {
+                self.generate_candidates(
+                    node,
+                    family_policy,
+                    min_leaf,
+                    adaptive.pilot_candidates_per_family.max(1),
+                    score_config,
+                )?
+            };
             candidates.sort_by(|left, right| {
                 crate::search::compare_candidates(left, right, score_config)
             });
@@ -1197,7 +1220,7 @@ impl TrainingContext {
                 1.0 - masks.len() as f64 / candidates.len() as f64
             };
             pilots.push(FamilyPilotMetrics {
-                family: family_for_policy(family_policy),
+                family,
                 best_score,
                 mean_top_k_score,
                 best_gain,
@@ -1223,7 +1246,10 @@ impl TrainingContext {
                     node,
                     family_policy,
                     min_leaf,
-                    beam.max(budget.final_budget),
+                    // The allocation is a retained-candidate quota, not a
+                    // literal-construction beam. Keeping these controls
+                    // separate prevents combinatorial family expansion.
+                    beam,
                     score_config,
                 )?
             };

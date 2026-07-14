@@ -4,7 +4,7 @@ use smart_mdt_rs::{
     tree::{
         allocate_family_budgets, learn, tree_is_certified, AdaptiveLanguageConfig,
         CandidateGenerationConfig, FamilyPilotMetrics, LanguagePolicy, LearnerConfig, NodeView,
-        TrainingContext,
+        ParallelConfig, TrainingContext,
     },
 };
 use std::sync::Arc;
@@ -152,4 +152,74 @@ fn disabled_adaptation_reproduces_fixed_allocation_and_enabled_tree_is_certified
     )
     .unwrap();
     assert!(tree_is_certified(&adaptive));
+}
+
+#[test]
+fn retained_budget_never_expands_the_literal_construction_beam() {
+    let context = TrainingContext::new(Arc::new(dataset()));
+    let config = AdaptiveLanguageConfig {
+        enabled: true,
+        total_candidate_budget: 1_000,
+        minimum_family_quota: 1,
+        ..AdaptiveLanguageConfig::default()
+    };
+    let _ = context
+        .generate_candidates_adaptive(
+            &context.root_view(),
+            CandidateGenerationConfig {
+                policy: LanguagePolicy::SmartCertified,
+                min_leaf: 1,
+                beam: 4,
+                score: &Default::default(),
+                parallel: &Default::default(),
+                adaptive: &config,
+            },
+        )
+        .unwrap();
+    let generated = context.diagnostics().adaptive_language.nodes[0].candidates_generated;
+    assert!(
+        generated < 500,
+        "construction beam expanded to {generated} candidates"
+    );
+}
+
+#[test]
+fn adaptive_parallel_pilots_match_serial_and_record_threads() {
+    let config = AdaptiveLanguageConfig {
+        enabled: true,
+        total_candidate_budget: 24,
+        ..AdaptiveLanguageConfig::default()
+    };
+    let run = |parallel: ParallelConfig| {
+        let context = TrainingContext::new(Arc::new(dataset()));
+        let candidates = context
+            .generate_candidates_adaptive(
+                &context.root_view(),
+                CandidateGenerationConfig {
+                    policy: LanguagePolicy::SmartCertified,
+                    min_leaf: 1,
+                    beam: 8,
+                    score: &Default::default(),
+                    parallel: &parallel,
+                    adaptive: &config,
+                },
+            )
+            .unwrap();
+        (
+            candidates
+                .iter()
+                .map(|candidate| format!("{:?}", candidate.predicate))
+                .collect::<Vec<_>>(),
+            context.diagnostics(),
+        )
+    };
+    let (serial, _) = run(ParallelConfig::disabled());
+    let (parallel, diagnostics) = run(ParallelConfig {
+        enabled: true,
+        threads: Some(2),
+        ..ParallelConfig::default()
+    });
+    assert_eq!(parallel, serial);
+    assert_eq!(diagnostics.parallel.configured_threads, 2);
+    assert!(diagnostics.parallel.candidate_batches_parallelized > 0);
 }
