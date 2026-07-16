@@ -238,6 +238,7 @@ fn smart_certified_benchmark_emits_path_metadata_and_enters_theorem_table() {
         seed: 42,
         strict_data_checks: false,
         cals: Default::default(),
+        compact_explain: Default::default(),
     })
     .unwrap();
     assert_eq!(rows.len(), 1);

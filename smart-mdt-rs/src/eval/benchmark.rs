@@ -35,6 +35,8 @@ pub struct BenchmarkConfig {
     pub strict_data_checks: bool,
     /// Unified settings used only by the `cals` method.
     pub cals: CalsConfig,
+    /// CompactExplain settings used only by `cals_compact_explain`.
+    pub compact_explain: CalsConfig,
 }
 
 /// Runs a quick deterministic synthetic benchmark and writes CSV artifacts.
@@ -49,6 +51,7 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
     let ds = Dataset::new(ColumnMajorMatrix::from_rows(&rows)?, y)?;
     let methods = default_methods();
     let cals = CalsConfig::default();
+    let compact_explain = CalsConfig::compact_explain();
     run_dataset_methods(DatasetRunSpec {
         dataset_name: "synthetic_quick",
         ds: &ds,
@@ -59,6 +62,7 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
         seed: 42,
         measure_times: false,
         cals: &cals,
+        compact_explain: &compact_explain,
     })
 }
 
@@ -94,6 +98,7 @@ pub fn run_full_benchmark(cfg: &BenchmarkConfig) -> Result<Vec<ResultRow>> {
             seed: cfg.seed,
             measure_times: true,
             cals: &cfg.cals,
+            compact_explain: &cfg.compact_explain,
         })?;
         collect_result_warnings(&rows, &mut warnings);
         all_rows.append(&mut rows);
@@ -164,6 +169,11 @@ fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backen
             Backend::PathCertified,
         )),
         "cals" => Some((
+            LanguagePolicy::SmartCertified,
+            LanguageFamily::SmartCertified,
+            Backend::PathCertified,
+        )),
+        "cals_compact_explain" => Some((
             LanguagePolicy::SmartCertified,
             LanguageFamily::SmartCertified,
             Backend::PathCertified,
@@ -248,6 +258,7 @@ struct DatasetRunSpec<'a, P: AsRef<Path>> {
     seed: u64,
     measure_times: bool,
     cals: &'a CalsConfig,
+    compact_explain: &'a CalsConfig,
 }
 
 fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Vec<ResultRow>> {
@@ -261,6 +272,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
         seed,
         measure_times,
         cals,
+        compact_explain,
     } = spec;
     fs::create_dir_all(&output)?;
     let git_sha = git_sha();
@@ -276,6 +288,8 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 let random_seed = seed.wrapping_add(run as u64);
                 let cfg = if method == "cals" {
                     cals.learner_config(depth, random_seed)
+                } else if method == "cals_compact_explain" {
+                    compact_explain.learner_config(depth, random_seed)
                 } else {
                     LearnerConfig {
                         max_depth: depth,
@@ -404,7 +418,10 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
                     search_strategy: format!("{:?}", cfg.tree_search.strategy),
                     score_profile: format!("{:?}", cfg.split_score.profile),
-                    candidate_beam_width: if method == "cals" {
+                    candidate_beam_width: if matches!(
+                        method.as_str(),
+                        "cals" | "cals_compact_explain"
+                    ) {
                         cfg.tree_search.candidate_beam_width
                     } else {
                         cfg.beam_width
@@ -954,6 +971,7 @@ fn method_label(method: &str) -> &str {
         "affine" => "Affine",
         "smart_certified" => "Smart certified",
         "cals" => "CALS-MDT",
+        "cals_compact_explain" => "CALS-MDT CompactExplain v2",
         "best-certified" => "Best certified per node",
         other => other,
     }

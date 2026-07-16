@@ -70,6 +70,7 @@ fn cals_benchmark_method_is_theorem_admissible() {
         seed: 42,
         strict_data_checks: false,
         cals: CalsConfig::thesis(),
+        compact_explain: CalsConfig::compact_explain(),
     })
     .unwrap();
     assert_eq!(rows.len(), 1);

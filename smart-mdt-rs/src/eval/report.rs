@@ -204,7 +204,7 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
                     )
                 })
         }
-        "cals" => {
+        "cals" | "cals_compact_explain" => {
             r.path_certified
                 && r.path_violation_count == 0
                 && !r.empirical_fallback_used

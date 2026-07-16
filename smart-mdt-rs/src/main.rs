@@ -3,12 +3,16 @@ use smart_mdt_rs::{
     eval::{
         run_debug_candidates, run_full_benchmark, run_quick, BenchmarkConfig, DebugCandidateConfig,
     },
+    explain::{
+        compile_verified_explanation, render_human_explanation, verified_explanation_to_json,
+        ExplanationAudience,
+    },
     search::{SplitScoreConfig, SplitScoreProfile},
     tree::serialize::to_json,
     tree::{learn, CalsConfig, LanguagePolicy, LearnerConfig, TreeSearchStrategy},
     Result,
 };
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 fn arg(args: &[String], name: &str) -> Option<String> {
     args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
@@ -27,27 +31,31 @@ fn policy(s: &str) -> LanguagePolicy {
         "affine" => LanguagePolicy::AffineOnly,
         "smart_certified" => LanguagePolicy::SmartCertified,
         "cals" => LanguagePolicy::SmartCertified,
+        "cals_compact_explain" => LanguagePolicy::SmartCertified,
         _ => LanguagePolicy::BestCertifiedPerNode,
     }
 }
 
-fn cals_config(args: &[String]) -> CalsConfig {
-    let mut config = CalsConfig::thesis();
+fn apply_cals_args(args: &[String], mut config: CalsConfig) -> CalsConfig {
     if let Some(strategy) = arg(args, "--tree-search") {
         config.tree_search.strategy = match strategy.as_str() {
             "greedy" => TreeSearchStrategy::Greedy,
             "beam" => TreeSearchStrategy::GlobalBeam,
+            "selective" | "selective-lookahead" => TreeSearchStrategy::SelectiveLookahead,
             _ => TreeSearchStrategy::SparseLookahead,
         };
     }
     if let Some(width) = arg(args, "--tree-beam-width").and_then(|value| value.parse().ok()) {
         config.tree_search.tree_beam_width = width;
+        config.tree_search.selective.tree_beam_width = width;
     }
     if let Some(width) = arg(args, "--candidate-beam-width").and_then(|value| value.parse().ok()) {
         config.tree_search.candidate_beam_width = width;
+        config.tree_search.selective.candidate_beam_width = width;
     }
     if let Some(depth) = arg(args, "--lookahead-depth").and_then(|value| value.parse().ok()) {
         config.tree_search.lookahead_depth = depth;
+        config.tree_search.selective.maximum_depth = depth;
     }
     if let Some(budget) = arg(args, "--node-budget").and_then(|value| value.parse().ok()) {
         config.tree_search.node_budget = budget;
@@ -75,6 +83,14 @@ fn cals_config(args: &[String]) -> CalsConfig {
     }
     if has_flag(args, "--no-branch-and-bound") {
         config.branch_and_bound.enabled = false;
+    }
+    if let Some(threshold) =
+        arg(args, "--branch-and-bound-threshold").and_then(|value| value.parse().ok())
+    {
+        config.conditional_search.enabled = true;
+        config
+            .conditional_search
+            .branch_and_bound_candidate_threshold = threshold;
     }
     if has_flag(args, "--cache") {
         config.cache.enabled = true;
@@ -107,6 +123,23 @@ fn cals_config(args: &[String]) -> CalsConfig {
     if has_flag(args, "--no-prune") {
         config.pruning.enabled = false;
     }
+    if has_flag(args, "--class-aware-pruning") {
+        config.pruning.class_aware.enabled = true;
+    }
+    if let Some(value) =
+        arg(args, "--balanced-accuracy-epsilon").and_then(|value| value.parse().ok())
+    {
+        config.pruning.class_aware.balanced_accuracy_epsilon = value;
+    }
+    if let Some(value) = arg(args, "--minimum-minority-recall").and_then(|value| value.parse().ok())
+    {
+        config.pruning.class_aware.minimum_minority_recall = Some(value);
+    }
+    if let Some(value) =
+        arg(args, "--root-collapse-majority-threshold").and_then(|value| value.parse().ok())
+    {
+        config.pruning.class_aware.root_collapse_majority_threshold = value;
+    }
     if let Some(value) = arg(args, "--prune-validation-fraction").and_then(|v| v.parse().ok()) {
         config.pruning.validation_fraction = value;
     }
@@ -129,6 +162,33 @@ fn cals_config(args: &[String]) -> CalsConfig {
         config.axp_rerank.shortlist_size = size;
     }
     config
+}
+
+fn cals_config(args: &[String]) -> CalsConfig {
+    let base = match arg(args, "--cals-profile").as_deref() {
+        Some("compact-explain") | Some("compact_explain") => CalsConfig::compact_explain(),
+        _ => CalsConfig::thesis(),
+    };
+    apply_cals_args(args, base)
+}
+
+fn thesis_config(args: &[String]) -> CalsConfig {
+    apply_cals_args(args, CalsConfig::thesis())
+}
+
+fn compact_explain_config(args: &[String]) -> CalsConfig {
+    apply_cals_args(args, CalsConfig::compact_explain())
+}
+
+fn audience(value: &str) -> ExplanationAudience {
+    match value {
+        "general" => ExplanationAudience::General,
+        "clinical" => ExplanationAudience::Clinical,
+        "engineering" => ExplanationAudience::Engineering,
+        "management" => ExplanationAudience::Management,
+        "audit" => ExplanationAudience::Audit,
+        _ => ExplanationAudience::Technical,
+    }
 }
 
 fn parse_usize_list(s: &str) -> Vec<usize> {
@@ -155,7 +215,9 @@ fn main() -> Result<()> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5);
             let ds = Dataset::from_dl8_like(data)?;
-            let cfg = if method == "cals" {
+            let cfg = if method == "cals_compact_explain" {
+                compact_explain_config(&args).learner_config(max_depth, 42)
+            } else if method == "cals" {
                 cals_config(&args).learner_config(max_depth, 42)
             } else {
                 LearnerConfig {
@@ -206,7 +268,8 @@ fn main() -> Result<()> {
                     output,
                     seed,
                     strict_data_checks: has_flag(&args, "--strict-data-checks"),
-                    cals: cals_config(&args),
+                    cals: thesis_config(&args),
+                    compact_explain: compact_explain_config(&args),
                 };
                 let rows = run_full_benchmark(&cfg)?;
                 println!("wrote {} dataset benchmark rows", rows.len());
@@ -255,9 +318,42 @@ fn main() -> Result<()> {
             println!("wrote {} debug candidates", rows.len());
         }
         Some("explain") => {
-            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(
-                "explain requires serialized JSON phase; train/benchmark are available".into(),
-            ));
+            let data = arg(&args, "--data").ok_or_else(|| {
+                smart_mdt_rs::SmartMdtError::InvalidInput("--data required".into())
+            })?;
+            let method = arg(&args, "--method").unwrap_or_else(|| "cals_compact_explain".into());
+            let max_depth = arg(&args, "--max-depth")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(5);
+            let row = arg(&args, "--row")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let selected_audience =
+                audience(&arg(&args, "--audience").unwrap_or_else(|| "technical".into()));
+            let output = PathBuf::from(
+                arg(&args, "--output").unwrap_or_else(|| "verified_explanation".into()),
+            );
+            let dataset = Dataset::from_dl8_like(data)?;
+            let config = if method == "cals_compact_explain" {
+                compact_explain_config(&args).learner_config(max_depth, 42)
+            } else if method == "cals" {
+                cals_config(&args).learner_config(max_depth, 42)
+            } else {
+                LearnerConfig {
+                    max_depth,
+                    language_policy: policy(&method),
+                    ..LearnerConfig::default()
+                }
+            };
+            let tree = learn(&dataset, &config)?;
+            let explanation =
+                compile_verified_explanation(&tree, &dataset, row, selected_audience)?;
+            let json = verified_explanation_to_json(&explanation)?;
+            let text = render_human_explanation(&json)?;
+            fs::create_dir_all(&output)?;
+            fs::write(output.join("verified_explanation.json"), json)?;
+            fs::write(output.join("human_explanation.txt"), text)?;
+            println!("wrote verified_explanation.json and human_explanation.txt");
         }
         _ => println!("usage: smart-mdt-rs train|benchmark|debug-candidates|explain"),
     }

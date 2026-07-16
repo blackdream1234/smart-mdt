@@ -1,8 +1,9 @@
 //! Unified CALS-MDT configuration profiles.
 
 use super::{
-    AdaptiveLanguageConfig, AxpRerankConfig, CacheConfig, ConditionalCandidateSearchConfig,
-    LearnerConfig, ParallelConfig, PruningConfig, TreeSearchConfig, TreeSearchStrategy,
+    AdaptiveLanguageConfig, AxpRerankConfig, CacheConfig, ClassAwarePruningConfig,
+    ConditionalCandidateSearchConfig, LearnerConfig, ParallelConfig, PruningConfig,
+    SelectiveLookaheadConfig, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::search::{BranchAndBoundConfig, SplitScoreConfig};
 
@@ -59,6 +60,70 @@ impl CalsConfig {
             parallel,
             pruning,
             adaptive_language,
+            axp_rerank: AxpRerankConfig::default(),
+        }
+    }
+
+    /// Fast, serial, explanation-first profile with class-aware pruning guards.
+    pub fn compact_explain() -> Self {
+        let tree_search = TreeSearchConfig {
+            strategy: TreeSearchStrategy::SelectiveLookahead,
+            candidate_beam_width: 8,
+            tree_beam_width: 4,
+            lookahead_depth: 2,
+            max_expansions: 500,
+            selective: SelectiveLookaheadConfig {
+                enabled: true,
+                ..SelectiveLookaheadConfig::default()
+            },
+            ..TreeSearchConfig::default()
+        };
+        let pruning = PruningConfig {
+            enabled: true,
+            accuracy_epsilon: 0.005,
+            class_aware: ClassAwarePruningConfig {
+                enabled: true,
+                accuracy_epsilon: 0.005,
+                balanced_accuracy_epsilon: 0.01,
+                minimum_minority_recall: None,
+                minimum_validation_samples: 5,
+                minimum_validation_samples_per_class: 1,
+                root_collapse_majority_threshold: 0.9,
+                preserve_subtree_when_evidence_insufficient: true,
+            },
+            ..PruningConfig::default()
+        };
+        Self {
+            scoring: SplitScoreConfig::sparse_certified(),
+            branch_and_bound: BranchAndBoundConfig {
+                enabled: true,
+                exhaustive_fallback: true,
+                top_k: 8,
+                ..BranchAndBoundConfig::default()
+            },
+            cache: CacheConfig {
+                enabled: true,
+                node_statistics: false,
+                predicate_masks: true,
+                candidate_pools: true,
+                best_subtrees: false,
+                lookahead: false,
+                max_entries: 10_000,
+                approximate_byte_limit: 128 * 1024 * 1024,
+            },
+            tree_search,
+            conditional_search: ConditionalCandidateSearchConfig {
+                enabled: true,
+                branch_and_bound_candidate_threshold: 64,
+                candidate_cache_minimum_expected_reuse: 2,
+            },
+            parallel: ParallelConfig::disabled(),
+            pruning,
+            adaptive_language: AdaptiveLanguageConfig {
+                enabled: true,
+                total_candidate_budget: 32,
+                ..AdaptiveLanguageConfig::default()
+            },
             axp_rerank: AxpRerankConfig::default(),
         }
     }
