@@ -14,10 +14,19 @@ fn compact_profile_is_serial_selective_and_class_aware() {
     );
     assert!(compact.tree_search.selective.enabled);
     assert_eq!(compact.tree_search.selective.maximum_depth, 2);
-    assert_eq!(compact.tree_search.selective.candidate_beam_width, 8);
+    assert_eq!(compact.tree_search.selective.candidate_beam_width, 14);
     assert_eq!(compact.tree_search.selective.tree_beam_width, 4);
+    assert_eq!(compact.tree_search.candidate_beam_width, 16);
     assert!(!compact.parallel.enabled);
     assert!(compact.pruning.class_aware.enabled);
+    assert_eq!(compact.pruning.accuracy_epsilon, 0.04);
+    assert_eq!(compact.pruning.class_aware.accuracy_epsilon, 0.04);
+    assert_eq!(compact.pruning.class_aware.balanced_accuracy_epsilon, 0.4);
+    assert_eq!(
+        compact.pruning.class_aware.root_collapse_majority_threshold,
+        0.9
+    );
+    assert_eq!(compact.adaptive_language.total_candidate_budget, 56);
     assert!(compact.cache.predicate_masks);
     assert!(compact.cache.candidate_pools);
     assert!(!compact.cache.best_subtrees);

@@ -346,13 +346,13 @@ fn pruning_decision(
     {
         return PruningReason::BalancedAccuracyGuard;
     }
-    if leaf_metrics.minority_recall + aware.balanced_accuracy_epsilon
-        < subtree_metrics.minority_recall
-        || aware
-            .minimum_minority_recall
-            .is_some_and(|minimum| leaf_metrics.minority_recall < minimum)
-    {
-        return PruningReason::MinorityRecallGuard;
+    if let Some(minimum) = aware.minimum_minority_recall {
+        if leaf_metrics.minority_recall < minimum
+            || leaf_metrics.minority_recall + aware.balanced_accuracy_epsilon
+                < subtree_metrics.minority_recall
+        {
+            return PruningReason::MinorityRecallGuard;
+        }
     }
     PruningReason::ObjectiveImproved
 }

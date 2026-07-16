@@ -68,25 +68,26 @@ impl CalsConfig {
     pub fn compact_explain() -> Self {
         let tree_search = TreeSearchConfig {
             strategy: TreeSearchStrategy::SelectiveLookahead,
-            candidate_beam_width: 8,
+            candidate_beam_width: 16,
             tree_beam_width: 4,
             lookahead_depth: 2,
             max_expansions: 500,
             selective: SelectiveLookaheadConfig {
                 enabled: true,
+                candidate_beam_width: 14,
                 ..SelectiveLookaheadConfig::default()
             },
             ..TreeSearchConfig::default()
         };
         let pruning = PruningConfig {
             enabled: true,
-            accuracy_epsilon: 0.005,
+            accuracy_epsilon: 0.04,
             class_aware: ClassAwarePruningConfig {
                 enabled: true,
-                accuracy_epsilon: 0.005,
-                balanced_accuracy_epsilon: 0.01,
+                accuracy_epsilon: 0.04,
+                balanced_accuracy_epsilon: 0.4,
                 minimum_minority_recall: None,
-                minimum_validation_samples: 5,
+                minimum_validation_samples: 1,
                 minimum_validation_samples_per_class: 1,
                 root_collapse_majority_threshold: 0.9,
                 preserve_subtree_when_evidence_insufficient: true,
@@ -121,7 +122,7 @@ impl CalsConfig {
             pruning,
             adaptive_language: AdaptiveLanguageConfig {
                 enabled: true,
-                total_candidate_budget: 32,
+                total_candidate_budget: 56,
                 ..AdaptiveLanguageConfig::default()
             },
             axp_rerank: AxpRerankConfig::default(),
