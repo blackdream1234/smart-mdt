@@ -43,6 +43,33 @@ impl Default for SelectiveLookaheadConfig {
     }
 }
 
+/// Gates expensive candidate selection and memoization by estimated work/reuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionalCandidateSearchConfig {
+    pub enabled: bool,
+    pub branch_and_bound_candidate_threshold: usize,
+    pub candidate_cache_minimum_expected_reuse: usize,
+}
+
+impl Default for ConditionalCandidateSearchConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            branch_and_bound_candidate_threshold: 64,
+            candidate_cache_minimum_expected_reuse: 2,
+        }
+    }
+}
+
+/// Auditable decisions made by conditional candidate search.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConditionalSearchDiagnostics {
+    pub branch_and_bound_activation_count: usize,
+    pub branch_and_bound_avoided_count: usize,
+    pub cache_activation_count: usize,
+    pub estimated_work_saved: usize,
+}
+
 /// Deterministic policy for choosing the next open leaf in a partial tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FrontierSelection {

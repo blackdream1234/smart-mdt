@@ -4,8 +4,9 @@ use super::{
     allocate_family_budgets, AdaptiveLanguageConfig, AdaptiveLanguageDiagnostics,
     AdaptiveNodeDiagnostics, AxpCandidateDiagnostics, AxpRerankConfig, AxpRerankDiagnostics,
     BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
-    CandidatePoolCache, FamilyPilotMetrics, LanguagePolicy, LookaheadCache, NodeStatistics,
-    NodeStatisticsCache, ParallelConfig, ParallelDiagnostics, PruningDiagnostics, SearchStateKey,
+    CandidatePoolCache, ConditionalSearchDiagnostics, FamilyPilotMetrics, LanguagePolicy,
+    LookaheadCache, NodeStatistics, NodeStatisticsCache, ParallelConfig, ParallelDiagnostics,
+    PruningDiagnostics, SearchStateKey,
 };
 use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
@@ -69,6 +70,7 @@ pub struct TrainingDiagnostics {
     pub branch_and_bound: BranchAndBoundDiagnostics,
     pub cache: CacheDiagnostics,
     pub beam_search: BeamSearchDiagnostics,
+    pub conditional_search: ConditionalSearchDiagnostics,
     pub parallel: ParallelDiagnostics,
     pub pruning: PruningDiagnostics,
     pub adaptive_language: AdaptiveLanguageDiagnostics,
@@ -102,6 +104,7 @@ pub struct TrainingContext {
     diagnostics: AtomicTrainingDiagnostics,
     branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
     beam_search_diagnostics: RwLock<BeamSearchDiagnostics>,
+    conditional_search_diagnostics: RwLock<ConditionalSearchDiagnostics>,
     parallel_diagnostics: RwLock<ParallelDiagnostics>,
     pruning_diagnostics: RwLock<PruningDiagnostics>,
     adaptive_language_diagnostics: RwLock<AdaptiveLanguageDiagnostics>,
@@ -157,6 +160,7 @@ impl TrainingContext {
             diagnostics: AtomicTrainingDiagnostics::default(),
             branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
             beam_search_diagnostics: RwLock::new(BeamSearchDiagnostics::default()),
+            conditional_search_diagnostics: RwLock::new(ConditionalSearchDiagnostics::default()),
             parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
             pruning_diagnostics: RwLock::new(PruningDiagnostics::default()),
             adaptive_language_diagnostics: RwLock::new(AdaptiveLanguageDiagnostics::default()),
@@ -312,6 +316,11 @@ impl TrainingContext {
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone(),
+            conditional_search: self
+                .conditional_search_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
             parallel: self
                 .parallel_diagnostics
                 .read()
@@ -340,6 +349,23 @@ impl TrainingContext {
             .beam_search_diagnostics
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
+    }
+
+    pub fn record_conditional_search(
+        &self,
+        branch_and_bound_activated: bool,
+        branch_and_bound_avoided: bool,
+        cache_activated: bool,
+        estimated_work_saved: usize,
+    ) {
+        let mut diagnostics = self
+            .conditional_search_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.branch_and_bound_activation_count += usize::from(branch_and_bound_activated);
+        diagnostics.branch_and_bound_avoided_count += usize::from(branch_and_bound_avoided);
+        diagnostics.cache_activation_count += usize::from(cache_activated);
+        diagnostics.estimated_work_saved += estimated_work_saved;
     }
 
     fn record_parallel(&self, update: impl FnOnce(&mut ParallelDiagnostics)) {

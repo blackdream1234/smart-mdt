@@ -1,9 +1,9 @@
 use super::{
     deterministic_pruning_split, predict_row, prune_with_validation, AdaptiveLanguageConfig,
     AxpRerankConfig, BeamSearchDiagnostics, CacheConfig, CachedSubtree, CandidateGenerationConfig,
-    FrontierLeaf, NodeView, ParallelConfig, PartialTree, PartialTreeState, PruningConfig,
-    SearchStateKey, TrainingContext, TrainingDiagnostics, TreeNode, TreeSearchConfig,
-    TreeSearchStrategy,
+    ConditionalCandidateSearchConfig, FrontierLeaf, NodeView, ParallelConfig, PartialTree,
+    PartialTreeState, PruningConfig, SearchStateKey, TrainingContext, TrainingDiagnostics,
+    TreeNode, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -42,6 +42,7 @@ pub struct LearnerConfig {
     pub branch_and_bound: BranchAndBoundConfig,
     pub cache: CacheConfig,
     pub tree_search: TreeSearchConfig,
+    pub conditional_search: ConditionalCandidateSearchConfig,
     pub parallel: ParallelConfig,
     pub pruning: PruningConfig,
     pub adaptive_language: AdaptiveLanguageConfig,
@@ -62,6 +63,7 @@ impl Default for LearnerConfig {
             branch_and_bound: BranchAndBoundConfig::default(),
             cache: CacheConfig::default(),
             tree_search: TreeSearchConfig::default(),
+            conditional_search: ConditionalCandidateSearchConfig::default(),
             parallel: ParallelConfig::default(),
             pruning: PruningConfig::default(),
             adaptive_language: AdaptiveLanguageConfig::default(),
@@ -127,8 +129,13 @@ fn candidates(
     state_key: &SearchStateKey,
     cfg: &LearnerConfig,
 ) -> Result<Vec<SplitCandidate>> {
-    if let Some(cached) = context.candidate_pool_cached(state_key) {
-        return Ok(cached);
+    let candidate_cache_active = candidate_cache_is_warranted(cfg);
+    if candidate_cache_active {
+        context.record_conditional_search(false, false, true, 0);
+        if let Some(cached) = context.candidate_pool_cached(state_key) {
+            context.record_conditional_search(false, false, false, cached.len());
+            return Ok(cached);
+        }
     }
     let mut generated = context.generate_candidates_adaptive(
         node,
@@ -153,6 +160,10 @@ fn candidates(
         cfg.random_seed,
     )?;
     let mut branch_config = cfg.branch_and_bound.clone();
+    let branch_and_bound_active = branch_config.enabled
+        && (!cfg.conditional_search.enabled
+            || generated.len() > cfg.conditional_search.branch_and_bound_candidate_threshold);
+    branch_config.enabled = branch_and_bound_active;
     branch_config.top_k = if branch_config.enabled {
         branch_config.top_k.min(cfg.max_candidates_per_node)
     } else {
@@ -163,8 +174,36 @@ fn candidates(
             Arc::<[u64]>::from(context.full_predicate_mask(predicate).words().to_vec())
         });
     context.record_branch_and_bound(&diagnostics);
-    context.insert_candidate_pool(state_key.clone(), selected.clone());
+    context.record_conditional_search(
+        branch_and_bound_active,
+        cfg.branch_and_bound.enabled && !branch_and_bound_active,
+        false,
+        diagnostics.partial_states_pruned,
+    );
+    if candidate_cache_active {
+        context.insert_candidate_pool(state_key.clone(), selected.clone());
+    }
     Ok(selected)
+}
+
+fn candidate_cache_is_warranted(cfg: &LearnerConfig) -> bool {
+    if !(cfg.cache.enabled && cfg.cache.candidate_pools) {
+        return false;
+    }
+    if !cfg.conditional_search.enabled {
+        return true;
+    }
+    let expected_reuse = match cfg.tree_search.strategy {
+        TreeSearchStrategy::Greedy => 1,
+        TreeSearchStrategy::SparseLookahead | TreeSearchStrategy::GlobalBeam => {
+            cfg.tree_search.tree_beam_width.max(1)
+        }
+        TreeSearchStrategy::SelectiveLookahead => cfg.tree_search.selective.tree_beam_width.max(1),
+    };
+    expected_reuse
+        >= cfg
+            .conditional_search
+            .candidate_cache_minimum_expected_reuse
 }
 fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
     let state_key = search_state_key(&node, cfg, cfg.tree_search.node_budget);
@@ -262,13 +301,14 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?};axp={:?}",
+            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};conditional={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?};axp={:?}",
             cfg.language_policy,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
             cfg.max_candidates_per_node,
             candidate_generation_width(cfg),
             cfg.branch_and_bound,
+            cfg.conditional_search,
             cfg.tree_search,
             cfg.parallel,
             cfg.pruning,

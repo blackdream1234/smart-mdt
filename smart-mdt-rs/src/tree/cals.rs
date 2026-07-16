@@ -1,8 +1,8 @@
 //! Unified CALS-MDT configuration profiles.
 
 use super::{
-    AdaptiveLanguageConfig, AxpRerankConfig, CacheConfig, LearnerConfig, ParallelConfig,
-    PruningConfig, TreeSearchConfig, TreeSearchStrategy,
+    AdaptiveLanguageConfig, AxpRerankConfig, CacheConfig, ConditionalCandidateSearchConfig,
+    LearnerConfig, ParallelConfig, PruningConfig, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::search::{BranchAndBoundConfig, SplitScoreConfig};
 
@@ -12,6 +12,7 @@ pub struct CalsConfig {
     pub branch_and_bound: BranchAndBoundConfig,
     pub cache: CacheConfig,
     pub tree_search: TreeSearchConfig,
+    pub conditional_search: ConditionalCandidateSearchConfig,
     pub parallel: ParallelConfig,
     pub pruning: PruningConfig,
     pub adaptive_language: AdaptiveLanguageConfig,
@@ -54,6 +55,7 @@ impl CalsConfig {
             branch_and_bound,
             cache: CacheConfig::all_enabled(),
             tree_search,
+            conditional_search: ConditionalCandidateSearchConfig::default(),
             parallel,
             pruning,
             adaptive_language,
@@ -70,6 +72,7 @@ impl CalsConfig {
             branch_and_bound: self.branch_and_bound.clone(),
             cache: self.cache.clone(),
             tree_search: self.tree_search.clone(),
+            conditional_search: self.conditional_search.clone(),
             parallel: self.parallel.clone(),
             pruning: self.pruning.clone(),
             adaptive_language: self.adaptive_language.clone(),

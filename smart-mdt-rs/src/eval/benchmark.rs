@@ -469,6 +469,14 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     nodes_using_selective_lookahead: diagnostics
                         .beam_search
                         .nodes_using_selective_lookahead,
+                    branch_and_bound_activation_count: diagnostics
+                        .conditional_search
+                        .branch_and_bound_activation_count,
+                    branch_and_bound_avoided_count: diagnostics
+                        .conditional_search
+                        .branch_and_bound_avoided_count,
+                    cache_activation_count: diagnostics.conditional_search.cache_activation_count,
+                    estimated_work_saved: diagnostics.conditional_search.estimated_work_saved,
                     predicate_mask_cache_hits: diagnostics.cache.predicate_masks.hits,
                     predicate_mask_cache_misses: diagnostics.cache.predicate_masks.misses,
                     candidate_cache_hits: diagnostics.cache.candidate_pools.hits,
@@ -828,7 +836,7 @@ fn write_all_outputs(
 }
 
 fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<()> {
-    let mut search = String::from("dataset,run,depth,method,search_strategy,score_profile,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,search_time,path_certified,path_violation_count\n");
+    let mut search = String::from("dataset,run,depth,method,search_strategy,score_profile,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,search_time,path_certified,path_violation_count\n");
     let mut pruning = String::from("dataset,run,depth,method,pruning_enabled,nodes_before,nodes_after,leaves_before,leaves_after,literals_before,literals_after,validation_accuracy_before,validation_accuracy_after,validation_balanced_accuracy_before,validation_balanced_accuracy_after,validation_sensitivity_before,validation_sensitivity_after,validation_specificity_before,validation_specificity_after,validation_macro_f1_before,validation_macro_f1_after,validation_minority_recall_before,validation_minority_recall_after,validation_class_support,root_reason,reason_counts,pruning_time,path_certified\n");
     let mut cache = String::from("dataset,run,depth,method,predicate_mask_hits,predicate_mask_misses,candidate_hits,candidate_misses,subtree_hits,subtree_misses,incompatible_subtree_reuse\n");
     let mut family = String::from("dataset,run,depth,method,compatible_family_count,selected_family_counts,path_theory_state,path_backend\n");
@@ -842,7 +850,7 @@ fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<(
             row.method
         );
         search.push_str(&format!(
-            "{key},{},{},{},{},{},{},{},{},{},{}\n",
+            "{key},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             row.search_strategy,
             row.score_profile,
             row.candidate_count,
@@ -850,6 +858,10 @@ fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<(
             row.branch_and_bound_fallback_count,
             row.nodes_using_greedy_selection,
             row.nodes_using_selective_lookahead,
+            row.branch_and_bound_activation_count,
+            row.branch_and_bound_avoided_count,
+            row.cache_activation_count,
+            row.estimated_work_saved,
             row.search_time,
             row.path_certified,
             row.path_violation_count
@@ -968,7 +980,7 @@ fn path_certificate(backend: Backend) -> &'static str {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -1057,6 +1069,10 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.branch_and_bound_fallback_count.to_string(),
             r.nodes_using_greedy_selection.to_string(),
             r.nodes_using_selective_lookahead.to_string(),
+            r.branch_and_bound_activation_count.to_string(),
+            r.branch_and_bound_avoided_count.to_string(),
+            r.cache_activation_count.to_string(),
+            r.estimated_work_saved.to_string(),
             r.predicate_mask_cache_hits.to_string(),
             r.predicate_mask_cache_misses.to_string(),
             r.candidate_cache_hits.to_string(),
