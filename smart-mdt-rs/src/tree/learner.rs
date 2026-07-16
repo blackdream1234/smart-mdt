@@ -152,13 +152,15 @@ fn candidates(
         generated
             .retain(|candidate| candidate_is_compatible(node.theory_state, &candidate.predicate));
     }
-    generated = context.rerank_candidates_by_axp(
-        node,
-        generated,
-        &cfg.split_score,
-        &cfg.axp_rerank,
-        cfg.random_seed,
-    )?;
+    if cfg.axp_rerank.enabled {
+        generated = context.rerank_candidates_by_axp(
+            node,
+            generated,
+            &cfg.split_score,
+            &cfg.axp_rerank,
+            cfg.random_seed,
+        )?;
+    }
     let mut branch_config = cfg.branch_and_bound.clone();
     let branch_and_bound_active = branch_config.enabled
         && (!cfg.conditional_search.enabled

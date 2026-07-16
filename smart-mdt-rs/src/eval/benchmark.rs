@@ -1,11 +1,11 @@
 use super::{accuracy, theorem_table_filter, BenchmarkWarning, ResultRow};
 use crate::{
     data::{load_dl8_with_metadata, ColumnMajorMatrix, Dataset, DatasetMetadata},
-    explain::extract_axp_deletion,
+    explain::extract_final_tree_axps,
     logic::{Backend, LanguageFamily},
     tree::{
-        learn_with_diagnostics, predict_all, tree_is_certified, tree_path_theory_metadata,
-        CalsConfig, LanguagePolicy, LearnerConfig, TreeNode,
+        learn_with_diagnostics, predict_all, tree_path_theory_metadata, CalsConfig, LanguagePolicy,
+        LearnerConfig, TreeNode,
     },
     Result, SmartMdtError,
 };
@@ -303,22 +303,11 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 };
 
                 let axp_start = Instant::now();
-                let (mean_axp_length, max_axp_length, mut theorem_certified) =
-                    if test.features.rows() == 0 {
-                        (0.0, 0, path_certified)
-                    } else {
-                        let limit = test.features.rows().min(8);
-                        let mut total = 0usize;
-                        let mut maximum = 0usize;
-                        let mut certified = path_certified && tree_is_certified(&tree);
-                        for row in 0..limit {
-                            let axp = extract_axp_deletion(&tree, &test.features, row, true);
-                            total += axp.features.len();
-                            maximum = maximum.max(axp.features.len());
-                            certified &= axp.metadata.theorem_certified;
-                        }
-                        (total as f64 / limit as f64, maximum, certified)
-                    };
+                let final_axps = extract_final_tree_axps(&tree, &test.features, 8, true);
+                let mean_axp_length = final_axps.mean_length;
+                let max_axp_length = final_axps.max_length;
+                let final_axp_rows = final_axps.results.len();
+                let mut theorem_certified = path_certified && final_axps.theorem_certified;
                 let axp_time = if measure_times {
                     axp_start.elapsed().as_secs_f64()
                 } else {
@@ -399,6 +388,9 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     max_depth_reached: tree.depth(),
                     mean_axp_length,
                     axp_time,
+                    axp_extraction_stage: "post_selection_final_tree".into(),
+                    provisional_axp_evaluations: diagnostics.axp_rerank.candidates_evaluated,
+                    final_axp_rows,
                     theorem_certified,
                     language_family: declared_family,
                     backend: declared_backend,
@@ -980,7 +972,7 @@ fn path_certificate(backend: Backend) -> &'static str {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -1010,6 +1002,9 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.max_depth_reached.to_string(),
             r.mean_axp_length.to_string(),
             r.axp_time.to_string(),
+            r.axp_extraction_stage.clone(),
+            r.provisional_axp_evaluations.to_string(),
+            r.final_axp_rows.to_string(),
             r.theorem_certified.to_string(),
             format!("{:?}", r.language_family),
             format!("{:?}", r.backend),
