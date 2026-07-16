@@ -11,8 +11,36 @@ pub enum TreeSearchStrategy {
     Greedy,
     /// Retain several partial trees near the root, then finish greedily.
     SparseLookahead,
+    /// Apply bounded lookahead only at eligible ambiguous, low-gain, or large nodes.
+    SelectiveLookahead,
     /// Retain a bounded beam of complete partial-tree alternatives.
     GlobalBeam,
+}
+
+/// Node-local gate and widths for selective lookahead.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectiveLookaheadConfig {
+    pub enabled: bool,
+    pub maximum_depth: usize,
+    pub ambiguity_margin: f64,
+    pub minimum_confident_gain: f64,
+    pub large_node_threshold: usize,
+    pub candidate_beam_width: usize,
+    pub tree_beam_width: usize,
+}
+
+impl Default for SelectiveLookaheadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            maximum_depth: 2,
+            ambiguity_margin: 0.01,
+            minimum_confident_gain: 0.02,
+            large_node_threshold: 500,
+            candidate_beam_width: 8,
+            tree_beam_width: 4,
+        }
+    }
 }
 
 /// Deterministic policy for choosing the next open leaf in a partial tree.
@@ -28,7 +56,7 @@ pub enum FrontierSelection {
 }
 
 /// Bounded anytime tree-search configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TreeSearchConfig {
     pub strategy: TreeSearchStrategy,
     pub tree_beam_width: usize,
@@ -39,6 +67,7 @@ pub struct TreeSearchConfig {
     pub node_budget: usize,
     pub time_budget_ms: Option<u64>,
     pub frontier_selection: FrontierSelection,
+    pub selective: SelectiveLookaheadConfig,
 }
 
 impl Default for TreeSearchConfig {
@@ -52,6 +81,7 @@ impl Default for TreeSearchConfig {
             node_budget: usize::MAX,
             time_budget_ms: None,
             frontier_selection: FrontierSelection::HighestError,
+            selective: SelectiveLookaheadConfig::default(),
         }
     }
 }
@@ -163,4 +193,6 @@ pub struct BeamSearchDiagnostics {
     pub expansion_budget_reached: bool,
     pub time_budget_reached: bool,
     pub path_incompatible_candidates_rejected: usize,
+    pub nodes_using_greedy_selection: usize,
+    pub nodes_using_selective_lookahead: usize,
 }

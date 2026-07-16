@@ -163,3 +163,30 @@ fn partial_tree_completion_keeps_independent_branch_theory_states() {
     let complete: TreeNode = partial.into();
     assert!(tree_is_certified(&complete));
 }
+
+#[test]
+fn selective_lookahead_uses_both_selective_and_greedy_nodes_deterministically() {
+    let data = dataset();
+    let mut cfg = config(TreeSearchStrategy::SelectiveLookahead);
+    cfg.tree_search.selective.enabled = true;
+    cfg.tree_search.selective.maximum_depth = 0;
+    cfg.tree_search.selective.large_node_threshold = 1;
+    cfg.tree_search.selective.candidate_beam_width = 4;
+    cfg.tree_search.selective.tree_beam_width = 3;
+    let (first, diagnostics) = learn_with_diagnostics(&data, &cfg).unwrap();
+    let second = learn(&data, &cfg).unwrap();
+    assert_eq!(first, second);
+    assert!(tree_is_certified(&first));
+    assert!(diagnostics.beam_search.nodes_using_selective_lookahead > 0);
+    assert!(diagnostics.beam_search.nodes_using_greedy_selection > 0);
+}
+
+#[test]
+fn disabled_selective_gate_falls_back_to_greedy_selection() {
+    let data = dataset();
+    let cfg = config(TreeSearchStrategy::SelectiveLookahead);
+    let (tree, diagnostics) = learn_with_diagnostics(&data, &cfg).unwrap();
+    assert!(tree_is_certified(&tree));
+    assert_eq!(diagnostics.beam_search.nodes_using_selective_lookahead, 0);
+    assert!(diagnostics.beam_search.nodes_using_greedy_selection > 0);
+}

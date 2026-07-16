@@ -103,9 +103,9 @@ pub fn learn_with_diagnostics(
     let context = TrainingContext::with_cache_config(Arc::new(grow_data), cfg.cache.clone());
     let grown_tree = match cfg.tree_search.strategy {
         TreeSearchStrategy::Greedy => build(&context, cfg, context.root_view())?,
-        TreeSearchStrategy::SparseLookahead | TreeSearchStrategy::GlobalBeam => {
-            build_with_tree_search(&context, cfg)?
-        }
+        TreeSearchStrategy::SparseLookahead
+        | TreeSearchStrategy::SelectiveLookahead
+        | TreeSearchStrategy::GlobalBeam => build_with_tree_search(&context, cfg)?,
     };
     let tree = if let Some(split) = pruning_split {
         let (tree, mut diagnostics) =
@@ -248,6 +248,9 @@ fn candidate_generation_width(cfg: &LearnerConfig) -> usize {
         TreeSearchStrategy::SparseLookahead | TreeSearchStrategy::GlobalBeam => {
             cfg.tree_search.candidate_beam_width
         }
+        TreeSearchStrategy::SelectiveLookahead => {
+            cfg.tree_search.selective.candidate_beam_width.max(2)
+        }
     }
 }
 
@@ -372,6 +375,7 @@ fn build_with_tree_search(context: &TrainingContext, cfg: &LearnerConfig) -> Res
         }
 
         let mut next = Vec::new();
+        let mut selective_round = false;
         for state in beam {
             if state.frontier.is_empty() {
                 next.push(state);
@@ -404,10 +408,22 @@ fn build_with_tree_search(context: &TrainingContext, cfg: &LearnerConfig) -> Res
                 candidate_is_compatible(frontier.theory_state, &candidate.predicate)
             });
             diagnostics.path_incompatible_candidates_rejected += before_filter - ranked.len();
-            let candidate_width = if sparse_greedy {
-                1
+            let use_selective_lookahead = cfg.tree_search.strategy
+                == TreeSearchStrategy::SelectiveLookahead
+                && selective_lookahead_is_warranted(&frontier, &ranked, cfg);
+            if use_selective_lookahead {
+                diagnostics.nodes_using_selective_lookahead += 1;
+                selective_round = true;
             } else {
-                cfg.tree_search.candidate_beam_width.max(1)
+                diagnostics.nodes_using_greedy_selection += 1;
+            }
+            let candidate_width = match cfg.tree_search.strategy {
+                TreeSearchStrategy::SelectiveLookahead if use_selective_lookahead => {
+                    cfg.tree_search.selective.candidate_beam_width.max(1)
+                }
+                TreeSearchStrategy::SelectiveLookahead => 1,
+                _ if sparse_greedy => 1,
+                _ => cfg.tree_search.candidate_beam_width.max(1),
             };
             ranked.truncate(candidate_width);
             expansions += 1;
@@ -489,10 +505,13 @@ fn build_with_tree_search(context: &TrainingContext, cfg: &LearnerConfig) -> Res
             }
         }
         next.sort_by(compare_partial_states);
-        let width = if sparse_greedy {
-            1
-        } else {
-            cfg.tree_search.tree_beam_width.max(1)
+        let width = match cfg.tree_search.strategy {
+            TreeSearchStrategy::SelectiveLookahead if selective_round => {
+                cfg.tree_search.selective.tree_beam_width.max(1)
+            }
+            TreeSearchStrategy::SelectiveLookahead => 1,
+            _ if sparse_greedy => 1,
+            _ => cfg.tree_search.tree_beam_width.max(1),
         };
         if next.len() > width {
             diagnostics.states_pruned += next.len() - width;
@@ -514,6 +533,24 @@ fn build_with_tree_search(context: &TrainingContext, cfg: &LearnerConfig) -> Res
         ));
     }
     Ok(best.1)
+}
+
+fn selective_lookahead_is_warranted(
+    frontier: &FrontierLeaf,
+    ranked: &[SplitCandidate],
+    cfg: &LearnerConfig,
+) -> bool {
+    let selective = &cfg.tree_search.selective;
+    if !selective.enabled || frontier.depth > selective.maximum_depth {
+        return false;
+    }
+    let ambiguous = ranked.len() > 1
+        && (ranked[0].score.final_score - ranked[1].score.final_score).abs()
+            <= selective.ambiguity_margin;
+    let low_gain = ranked.first().is_some_and(|candidate| {
+        candidate.score.predictive_gain < selective.minimum_confident_gain
+    });
+    ambiguous || low_gain || frontier.rows.count_ones() >= selective.large_node_threshold
 }
 
 fn node_is_terminal(
