@@ -14,6 +14,34 @@ pub enum PruningSelectionMode {
     EpsilonPareto,
 }
 
+/// Additional validation guards for pruning on imbalanced binary data.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClassAwarePruningConfig {
+    pub enabled: bool,
+    pub accuracy_epsilon: f64,
+    pub balanced_accuracy_epsilon: f64,
+    pub minimum_minority_recall: Option<f64>,
+    pub minimum_validation_samples: usize,
+    pub minimum_validation_samples_per_class: usize,
+    pub root_collapse_majority_threshold: f64,
+    pub preserve_subtree_when_evidence_insufficient: bool,
+}
+
+impl Default for ClassAwarePruningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            accuracy_epsilon: 0.005,
+            balanced_accuracy_epsilon: 0.005,
+            minimum_minority_recall: None,
+            minimum_validation_samples: 20,
+            minimum_validation_samples_per_class: 3,
+            root_collapse_majority_threshold: 0.9,
+            preserve_subtree_when_evidence_insufficient: true,
+        }
+    }
+}
+
 /// Internal-validation pruning configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PruningConfig {
@@ -26,6 +54,7 @@ pub struct PruningConfig {
     pub accuracy_epsilon: f64,
     pub use_one_standard_error_rule: bool,
     pub selection_mode: PruningSelectionMode,
+    pub class_aware: ClassAwarePruningConfig,
 }
 
 impl Default for PruningConfig {
@@ -40,6 +69,44 @@ impl Default for PruningConfig {
             accuracy_epsilon: 0.005,
             use_one_standard_error_rule: false,
             selection_mode: PruningSelectionMode::EpsilonPareto,
+            class_aware: ClassAwarePruningConfig::default(),
+        }
+    }
+}
+
+/// Deterministic binary classification metrics used only on pruning validation rows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PruningClassificationMetrics {
+    pub accuracy: f64,
+    pub balanced_accuracy: f64,
+    pub sensitivity: f64,
+    pub specificity: f64,
+    pub macro_f1: f64,
+    pub minority_recall: f64,
+    pub class_support: BTreeMap<ClassId, usize>,
+}
+
+/// Stable reason assigned to each bottom-up pruning decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PruningReason {
+    ObjectiveImproved,
+    BalancedAccuracyGuard,
+    MinorityRecallGuard,
+    InsufficientValidationSupport,
+    RootCollapseGuard,
+    #[default]
+    NoChange,
+}
+
+impl PruningReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ObjectiveImproved => "objective_improved",
+            Self::BalancedAccuracyGuard => "balanced_accuracy_guard",
+            Self::MinorityRecallGuard => "minority_recall_guard",
+            Self::InsufficientValidationSupport => "insufficient_validation_support",
+            Self::RootCollapseGuard => "root_collapse_guard",
+            Self::NoChange => "no_change",
         }
     }
 }
@@ -53,6 +120,7 @@ pub struct PruningPathEntry {
     pub leaves: usize,
     pub literals: usize,
     pub estimated_mean_axp_length: f64,
+    pub reason: PruningReason,
 }
 
 /// Audit metrics for the selected pruned tree.
@@ -72,6 +140,10 @@ pub struct PruningDiagnostics {
     pub estimated_axp_after: f64,
     pub validation_accuracy_before: f64,
     pub validation_accuracy_after: f64,
+    pub validation_metrics_before: PruningClassificationMetrics,
+    pub validation_metrics_after: PruningClassificationMetrics,
+    pub root_decision_reason: PruningReason,
+    pub decision_reason_counts: BTreeMap<PruningReason, usize>,
     pub pruning_time_seconds: f64,
     pub path_certified_after: bool,
     pub pruning_path: Vec<PruningPathEntry>,
@@ -84,6 +156,13 @@ pub struct PruningSplit {
     pub validation: Dataset,
     pub grow_indices: Vec<usize>,
     pub validation_indices: Vec<usize>,
+}
+
+#[derive(Default)]
+struct PruningAudit {
+    path: Vec<PruningPathEntry>,
+    step: usize,
+    reason_counts: BTreeMap<PruningReason, usize>,
 }
 
 pub fn deterministic_pruning_split(
@@ -142,13 +221,11 @@ pub fn prune_with_validation(
 ) -> (TreeNode, PruningDiagnostics) {
     let started = Instant::now();
     let all_rows = (0..validation.labels.len()).collect::<Vec<_>>();
-    let mut path = Vec::new();
-    let mut step = 0;
-    let pruned = prune_node(
-        original, validation, &all_rows, config, &mut path, &mut step,
-    );
-    let before_accuracy = accuracy(original, validation, &all_rows);
-    let after_accuracy = accuracy(&pruned, validation, &all_rows);
+    let mut audit = PruningAudit::default();
+    let (pruned, root_reason) =
+        prune_node(original, validation, &all_rows, config, &mut audit, true);
+    let before_metrics = classification_metrics(original, validation, &all_rows);
+    let after_metrics = classification_metrics(&pruned, validation, &all_rows);
     let diagnostics = PruningDiagnostics {
         enabled: true,
         grow_samples: 0,
@@ -162,11 +239,15 @@ pub fn prune_with_validation(
         literals_after: pruned.literals(),
         estimated_axp_before: estimated_mean_axp(original, validation, &all_rows),
         estimated_axp_after: estimated_mean_axp(&pruned, validation, &all_rows),
-        validation_accuracy_before: before_accuracy,
-        validation_accuracy_after: after_accuracy,
+        validation_accuracy_before: before_metrics.accuracy,
+        validation_accuracy_after: after_metrics.accuracy,
+        validation_metrics_before: before_metrics,
+        validation_metrics_after: after_metrics,
+        root_decision_reason: root_reason,
+        decision_reason_counts: audit.reason_counts,
         pruning_time_seconds: started.elapsed().as_secs_f64(),
         path_certified_after: tree_is_certified(&pruned),
-        pruning_path: path,
+        pruning_path: audit.path,
     };
     (pruned, diagnostics)
 }
@@ -176,9 +257,9 @@ fn prune_node(
     validation: &Dataset,
     rows: &[usize],
     config: &PruningConfig,
-    path: &mut Vec<PruningPathEntry>,
-    step: &mut usize,
-) -> TreeNode {
+    audit: &mut PruningAudit,
+    is_root: bool,
+) -> (TreeNode, PruningReason) {
     let TreeNode::Internal {
         predicate,
         left,
@@ -186,14 +267,14 @@ fn prune_node(
         majority_class,
     } = tree
     else {
-        return tree.clone();
+        return (tree.clone(), PruningReason::NoChange);
     };
     let (left_rows, right_rows): (Vec<_>, Vec<_>) = rows
         .iter()
         .copied()
         .partition(|&row| predicate.eval(&validation.features, row));
-    let left_pruned = prune_node(left, validation, &left_rows, config, path, step);
-    let right_pruned = prune_node(right, validation, &right_rows, config, path, step);
+    let (left_pruned, _) = prune_node(left, validation, &left_rows, config, audit, false);
+    let (right_pruned, _) = prune_node(right, validation, &right_rows, config, audit, false);
     let candidate = TreeNode::Internal {
         predicate: predicate.clone(),
         left: Box::new(left_pruned),
@@ -204,23 +285,79 @@ fn prune_node(
         class: *majority_class,
         samples: subtree_samples(tree),
     };
-    if should_prune(&candidate, &leaf, validation, rows, config) {
-        *step += 1;
-        path.push(PruningPathEntry {
-            step: *step,
+    let decision = pruning_decision(&candidate, &leaf, validation, rows, config, is_root);
+    *audit.reason_counts.entry(decision).or_default() += 1;
+    if decision == PruningReason::ObjectiveImproved {
+        audit.step += 1;
+        audit.path.push(PruningPathEntry {
+            step: audit.step,
             validation_error: 1.0 - accuracy(&leaf, validation, rows),
             nodes: leaf.nodes(),
             leaves: leaf.leaves(),
             literals: leaf.literals(),
             estimated_mean_axp_length: estimated_mean_axp(&leaf, validation, rows),
+            reason: decision,
         });
-        leaf
+        (leaf, decision)
     } else {
-        candidate
+        (candidate, decision)
     }
 }
 
-fn should_prune(
+fn pruning_decision(
+    subtree: &TreeNode,
+    leaf: &TreeNode,
+    validation: &Dataset,
+    rows: &[usize],
+    config: &PruningConfig,
+    is_root: bool,
+) -> PruningReason {
+    if !legacy_should_prune(subtree, leaf, validation, rows, config) {
+        return PruningReason::NoChange;
+    }
+    if !config.class_aware.enabled {
+        return PruningReason::ObjectiveImproved;
+    }
+    let aware = &config.class_aware;
+    let subtree_metrics = classification_metrics(subtree, validation, rows);
+    let leaf_metrics = classification_metrics(leaf, validation, rows);
+    let support_is_sufficient = rows.len() >= aware.minimum_validation_samples
+        && subtree_metrics
+            .class_support
+            .values()
+            .all(|&support| support >= aware.minimum_validation_samples_per_class);
+    if !support_is_sufficient && aware.preserve_subtree_when_evidence_insufficient {
+        return PruningReason::InsufficientValidationSupport;
+    }
+    let majority_rate = leaf_metrics
+        .class_support
+        .values()
+        .copied()
+        .max()
+        .map_or(0.0, |count| count as f64 / rows.len().max(1) as f64);
+    if is_root && majority_rate < aware.root_collapse_majority_threshold {
+        return PruningReason::RootCollapseGuard;
+    }
+    if leaf_metrics.accuracy + aware.accuracy_epsilon < subtree_metrics.accuracy {
+        return PruningReason::NoChange;
+    }
+    if leaf_metrics.balanced_accuracy + aware.balanced_accuracy_epsilon
+        < subtree_metrics.balanced_accuracy
+    {
+        return PruningReason::BalancedAccuracyGuard;
+    }
+    if leaf_metrics.minority_recall + aware.balanced_accuracy_epsilon
+        < subtree_metrics.minority_recall
+        || aware
+            .minimum_minority_recall
+            .is_some_and(|minimum| leaf_metrics.minority_recall < minimum)
+    {
+        return PruningReason::MinorityRecallGuard;
+    }
+    PruningReason::ObjectiveImproved
+}
+
+fn legacy_should_prune(
     subtree: &TreeNode,
     leaf: &TreeNode,
     validation: &Dataset,
@@ -247,6 +384,76 @@ fn should_prune(
             objective(leaf_error, leaf, validation, rows, config)
                 <= objective(subtree_error, subtree, validation, rows, config)
         }
+    }
+}
+
+/// Computes class-aware metrics without consulting any data outside `validation`.
+pub fn classification_metrics(
+    tree: &TreeNode,
+    validation: &Dataset,
+    rows: &[usize],
+) -> PruningClassificationMetrics {
+    if rows.is_empty() {
+        return PruningClassificationMetrics::default();
+    }
+    let mut support = BTreeMap::new();
+    let mut true_positive_by_class = BTreeMap::new();
+    let mut predicted_by_class = BTreeMap::new();
+    let mut correct = 0usize;
+    for &row in rows {
+        let actual = validation.labels[row];
+        let predicted = predict_row(tree, &validation.features, row);
+        *support.entry(actual).or_default() += 1;
+        *predicted_by_class.entry(predicted).or_default() += 1;
+        if actual == predicted {
+            correct += 1;
+            *true_positive_by_class.entry(actual).or_default() += 1;
+        }
+    }
+    let recalls = support
+        .iter()
+        .map(|(&class, &class_support)| {
+            true_positive_by_class.get(&class).copied().unwrap_or(0) as f64 / class_support as f64
+        })
+        .collect::<Vec<_>>();
+    let balanced_accuracy = recalls.iter().sum::<f64>() / recalls.len().max(1) as f64;
+    let macro_f1 = support
+        .iter()
+        .map(|(&class, &class_support)| {
+            let true_positive = true_positive_by_class.get(&class).copied().unwrap_or(0) as f64;
+            let precision =
+                true_positive / predicted_by_class.get(&class).copied().unwrap_or(0).max(1) as f64;
+            let recall = true_positive / class_support as f64;
+            if precision + recall == 0.0 {
+                0.0
+            } else {
+                2.0 * precision * recall / (precision + recall)
+            }
+        })
+        .sum::<f64>()
+        / support.len().max(1) as f64;
+    let minority_class = support
+        .iter()
+        .min_by_key(|(class, class_support)| (**class_support, **class))
+        .map(|(&class, _)| class);
+    let recall_for = |class: ClassId| {
+        let class_support = support.get(&class).copied().unwrap_or(0);
+        if class_support == 0 {
+            0.0
+        } else {
+            true_positive_by_class.get(&class).copied().unwrap_or(0) as f64 / class_support as f64
+        }
+    };
+    let positive_class = support.keys().copied().max().unwrap_or(1);
+    let negative_class = support.keys().copied().min().unwrap_or(0);
+    PruningClassificationMetrics {
+        accuracy: correct as f64 / rows.len() as f64,
+        balanced_accuracy,
+        sensitivity: recall_for(positive_class),
+        specificity: recall_for(negative_class),
+        macro_f1,
+        minority_recall: minority_class.map_or(0.0, recall_for),
+        class_support: support,
     }
 }
 

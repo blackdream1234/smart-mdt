@@ -3,7 +3,8 @@ use smart_mdt_rs::{
     logic::{Literal, Predicate, ThresholdAtom, ThresholdOp},
     tree::{
         deterministic_pruning_split, learn, prune_with_validation, tree_is_certified,
-        LanguagePolicy, LearnerConfig, PruningConfig, PruningSelectionMode, TreeNode,
+        ClassAwarePruningConfig, LanguagePolicy, LearnerConfig, PruningConfig, PruningReason,
+        PruningSelectionMode, TreeNode,
     },
 };
 
@@ -47,6 +48,42 @@ fn overgrown_tree() -> TreeNode {
             class: 0,
             samples: 10,
         }),
+    }
+}
+
+fn separating_tree(samples: usize) -> TreeNode {
+    TreeNode::Internal {
+        predicate: Predicate::Unary(lit(0)),
+        majority_class: 0,
+        left: Box::new(TreeNode::Leaf {
+            class: 1,
+            samples: samples / 2,
+        }),
+        right: Box::new(TreeNode::Leaf {
+            class: 0,
+            samples: samples - samples / 2,
+        }),
+    }
+}
+
+fn binary_dataset(majority: usize, minority: usize) -> Dataset {
+    let mut rows = vec![vec![0.0]; majority];
+    rows.extend(vec![vec![1.0]; minority]);
+    let mut labels = vec![0; majority];
+    labels.extend(vec![1; minority]);
+    Dataset::new(ColumnMajorMatrix::from_rows(&rows).unwrap(), labels).unwrap()
+}
+
+fn class_aware() -> ClassAwarePruningConfig {
+    ClassAwarePruningConfig {
+        enabled: true,
+        accuracy_epsilon: 0.5,
+        balanced_accuracy_epsilon: 0.01,
+        minimum_minority_recall: None,
+        minimum_validation_samples: 10,
+        minimum_validation_samples_per_class: 2,
+        root_collapse_majority_threshold: 0.9,
+        preserve_subtree_when_evidence_insufficient: true,
     }
 }
 
@@ -148,4 +185,118 @@ fn disabled_pruning_reproduces_training_and_enabled_fit_is_certified() {
     )
     .unwrap();
     assert!(tree_is_certified(&pruned));
+}
+
+#[test]
+fn balanced_validation_rejects_constant_root() {
+    let validation = binary_dataset(20, 20);
+    let original = separating_tree(40);
+    let (pruned, diagnostics) = prune_with_validation(
+        &original,
+        &validation,
+        &PruningConfig {
+            enabled: true,
+            accuracy_epsilon: 0.5,
+            class_aware: class_aware(),
+            ..PruningConfig::default()
+        },
+    );
+    assert_eq!(pruned, original);
+    assert_eq!(
+        diagnostics.root_decision_reason,
+        PruningReason::RootCollapseGuard
+    );
+    assert_eq!(diagnostics.validation_metrics_before.balanced_accuracy, 1.0);
+    assert_eq!(diagnostics.validation_metrics_before.class_support[&0], 20);
+    assert_eq!(diagnostics.validation_metrics_before.class_support[&1], 20);
+}
+
+#[test]
+fn highly_imbalanced_validation_allows_equivalent_constant_root() {
+    let validation = binary_dataset(95, 5);
+    let original = TreeNode::Internal {
+        predicate: Predicate::Unary(lit(0)),
+        majority_class: 0,
+        left: Box::new(TreeNode::Leaf {
+            class: 0,
+            samples: 5,
+        }),
+        right: Box::new(TreeNode::Leaf {
+            class: 0,
+            samples: 95,
+        }),
+    };
+    let (pruned, diagnostics) = prune_with_validation(
+        &original,
+        &validation,
+        &PruningConfig {
+            enabled: true,
+            class_aware: class_aware(),
+            ..PruningConfig::default()
+        },
+    );
+    assert_eq!(pruned.nodes(), 1);
+    assert_eq!(
+        diagnostics.root_decision_reason,
+        PruningReason::ObjectiveImproved
+    );
+    assert!(tree_is_certified(&pruned));
+}
+
+#[test]
+fn minority_recall_loss_blocks_pruning() {
+    let validation = binary_dataset(95, 5);
+    let original = separating_tree(100);
+    let mut aware = class_aware();
+    aware.balanced_accuracy_epsilon = 1.0;
+    aware.minimum_minority_recall = Some(0.5);
+    let (pruned, diagnostics) = prune_with_validation(
+        &original,
+        &validation,
+        &PruningConfig {
+            enabled: true,
+            accuracy_epsilon: 0.1,
+            class_aware: aware,
+            ..PruningConfig::default()
+        },
+    );
+    assert_eq!(pruned, original);
+    assert_eq!(
+        diagnostics.root_decision_reason,
+        PruningReason::MinorityRecallGuard
+    );
+    assert_eq!(diagnostics.validation_metrics_before.minority_recall, 1.0);
+    assert_eq!(diagnostics.validation_metrics_after.minority_recall, 1.0);
+    assert!(diagnostics.path_certified_after);
+}
+
+#[test]
+fn disabled_class_aware_mode_reproduces_legacy_pruning() {
+    let validation = binary_dataset(20, 20);
+    let original = separating_tree(40);
+    let legacy = PruningConfig {
+        enabled: true,
+        accuracy_epsilon: 0.5,
+        ..PruningConfig::default()
+    };
+    let (expected, _) = prune_with_validation(&original, &validation, &legacy);
+    let (actual, diagnostics) = prune_with_validation(
+        &original,
+        &validation,
+        &PruningConfig {
+            class_aware: ClassAwarePruningConfig {
+                enabled: false,
+                root_collapse_majority_threshold: 1.0,
+                minimum_validation_samples: usize::MAX,
+                ..ClassAwarePruningConfig::default()
+            },
+            ..legacy
+        },
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(actual.nodes(), 1);
+    assert_eq!(
+        diagnostics.root_decision_reason,
+        PruningReason::ObjectiveImproved
+    );
 }

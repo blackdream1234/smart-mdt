@@ -361,6 +361,19 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     .unwrap_or_else(|| compatible_family_count_for_policy(policy));
                 let selected_family_counts =
                     format!("{:?}", diagnostics.adaptive_language.selected_family_counts);
+                let validation_class_support = pruning
+                    .validation_metrics_before
+                    .class_support
+                    .iter()
+                    .map(|(class, support)| format!("{class}:{support}"))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                let pruning_reason_counts = pruning
+                    .decision_reason_counts
+                    .iter()
+                    .map(|(reason, count)| format!("{}:{count}", reason.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("|");
                 let pruning_time = pruning.pruning_time_seconds;
                 let axp_rerank_time = diagnostics.axp_rerank.elapsed_seconds;
                 let search_time = (train_time - pruning_time - axp_rerank_time).max(0.0);
@@ -416,6 +429,35 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     literals_after_prune: tree.literals(),
                     validation_accuracy_before_prune: pruning.validation_accuracy_before,
                     validation_accuracy_after_prune: pruning.validation_accuracy_after,
+                    validation_balanced_accuracy_before_prune: pruning
+                        .validation_metrics_before
+                        .balanced_accuracy,
+                    validation_balanced_accuracy_after_prune: pruning
+                        .validation_metrics_after
+                        .balanced_accuracy,
+                    validation_sensitivity_before_prune: pruning
+                        .validation_metrics_before
+                        .sensitivity,
+                    validation_sensitivity_after_prune: pruning
+                        .validation_metrics_after
+                        .sensitivity,
+                    validation_specificity_before_prune: pruning
+                        .validation_metrics_before
+                        .specificity,
+                    validation_specificity_after_prune: pruning
+                        .validation_metrics_after
+                        .specificity,
+                    validation_macro_f1_before_prune: pruning.validation_metrics_before.macro_f1,
+                    validation_macro_f1_after_prune: pruning.validation_metrics_after.macro_f1,
+                    validation_minority_recall_before_prune: pruning
+                        .validation_metrics_before
+                        .minority_recall,
+                    validation_minority_recall_after_prune: pruning
+                        .validation_metrics_after
+                        .minority_recall,
+                    validation_class_support,
+                    pruning_root_reason: pruning.root_decision_reason.as_str().into(),
+                    pruning_reason_counts,
                     candidate_count,
                     candidate_pruned_count: diagnostics.branch_and_bound.partial_states_pruned,
                     branch_and_bound_fallback_count: diagnostics
@@ -781,7 +823,7 @@ fn write_all_outputs(
 
 fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<()> {
     let mut search = String::from("dataset,run,depth,method,search_strategy,score_profile,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,search_time,path_certified,path_violation_count\n");
-    let mut pruning = String::from("dataset,run,depth,method,pruning_enabled,nodes_before,nodes_after,leaves_before,leaves_after,literals_before,literals_after,validation_accuracy_before,validation_accuracy_after,pruning_time,path_certified\n");
+    let mut pruning = String::from("dataset,run,depth,method,pruning_enabled,nodes_before,nodes_after,leaves_before,leaves_after,literals_before,literals_after,validation_accuracy_before,validation_accuracy_after,validation_balanced_accuracy_before,validation_balanced_accuracy_after,validation_sensitivity_before,validation_sensitivity_after,validation_specificity_before,validation_specificity_after,validation_macro_f1_before,validation_macro_f1_after,validation_minority_recall_before,validation_minority_recall_after,validation_class_support,root_reason,reason_counts,pruning_time,path_certified\n");
     let mut cache = String::from("dataset,run,depth,method,predicate_mask_hits,predicate_mask_misses,candidate_hits,candidate_misses,subtree_hits,subtree_misses,incompatible_subtree_reuse\n");
     let mut family = String::from("dataset,run,depth,method,compatible_family_count,selected_family_counts,path_theory_state,path_backend\n");
     let mut beam = String::from("dataset,run,depth,method,search_strategy,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,total_fit_time\n");
@@ -805,7 +847,7 @@ fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<(
             row.path_violation_count
         ));
         pruning.push_str(&format!(
-            "{key},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{key},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             row.pruning_enabled,
             row.nodes_before_prune,
             row.nodes_after_prune,
@@ -815,6 +857,19 @@ fn write_optimization_diagnostics(output: &Path, rows: &[ResultRow]) -> Result<(
             row.literals_after_prune,
             row.validation_accuracy_before_prune,
             row.validation_accuracy_after_prune,
+            row.validation_balanced_accuracy_before_prune,
+            row.validation_balanced_accuracy_after_prune,
+            row.validation_sensitivity_before_prune,
+            row.validation_sensitivity_after_prune,
+            row.validation_specificity_before_prune,
+            row.validation_specificity_after_prune,
+            row.validation_macro_f1_before_prune,
+            row.validation_macro_f1_after_prune,
+            row.validation_minority_recall_before_prune,
+            row.validation_minority_recall_after_prune,
+            csv_escape(&row.validation_class_support),
+            row.pruning_root_reason,
+            csv_escape(&row.pruning_reason_counts),
             row.pruning_time,
             row.path_certified
         ));
@@ -905,7 +960,7 @@ fn path_certificate(backend: Backend) -> &'static str {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -976,6 +1031,19 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.literals_after_prune.to_string(),
             r.validation_accuracy_before_prune.to_string(),
             r.validation_accuracy_after_prune.to_string(),
+            r.validation_balanced_accuracy_before_prune.to_string(),
+            r.validation_balanced_accuracy_after_prune.to_string(),
+            r.validation_sensitivity_before_prune.to_string(),
+            r.validation_sensitivity_after_prune.to_string(),
+            r.validation_specificity_before_prune.to_string(),
+            r.validation_specificity_after_prune.to_string(),
+            r.validation_macro_f1_before_prune.to_string(),
+            r.validation_macro_f1_after_prune.to_string(),
+            r.validation_minority_recall_before_prune.to_string(),
+            r.validation_minority_recall_after_prune.to_string(),
+            csv_escape(&r.validation_class_support),
+            r.pruning_root_reason.clone(),
+            csv_escape(&r.pruning_reason_counts),
             r.candidate_count.to_string(),
             r.candidate_pruned_count.to_string(),
             r.branch_and_bound_fallback_count.to_string(),
