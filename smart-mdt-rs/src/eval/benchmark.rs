@@ -10,6 +10,7 @@ use crate::{
     Result, SmartMdtError,
 };
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     time::Instant,
@@ -533,8 +534,12 @@ fn collect_metadata_warnings(meta: &DatasetMetadata, warnings: &mut Vec<Benchmar
             dataset: meta.dataset.clone(),
             run: String::new(),
             depth: String::new(),
-            method: String::new(),
+            method: "all".into(),
+            affected_rows: 1,
+            runs: "all".into(),
+            depths: "all".into(),
             warning_type: "suspicious_majority_rate".into(),
+            reason: "majority_class_rate >= 0.99".into(),
             message: "majority_class_rate >= 0.99".into(),
             value: meta.majority_class_rate.to_string(),
         });
@@ -544,8 +549,15 @@ fn collect_metadata_warnings(meta: &DatasetMetadata, warnings: &mut Vec<Benchmar
             dataset: meta.dataset.clone(),
             run: String::new(),
             depth: String::new(),
-            method: String::new(),
+            method: "all".into(),
+            affected_rows: 1,
+            runs: "all".into(),
+            depths: "all".into(),
             warning_type: "feature_label_leakage".into(),
+            reason: format!(
+                "feature columns equal binarized label: {}",
+                meta.feature_equal_to_label_indices
+            ),
             message: format!(
                 "feature columns equal binarized label: {}",
                 meta.feature_equal_to_label_indices
@@ -558,8 +570,12 @@ fn collect_metadata_warnings(meta: &DatasetMetadata, warnings: &mut Vec<Benchmar
             dataset: meta.dataset.clone(),
             run: String::new(),
             depth: String::new(),
-            method: String::new(),
+            method: "all".into(),
+            affected_rows: 1,
+            runs: "all".into(),
+            depths: "all".into(),
             warning_type: "dataset_skipped".into(),
+            reason: meta.skip_reason.clone(),
             message: meta.skip_reason.clone(),
             value: "1".into(),
         });
@@ -574,7 +590,11 @@ fn collect_result_warnings(rows: &[ResultRow], warnings: &mut Vec<BenchmarkWarni
                 run: r.run.to_string(),
                 depth: r.depth.to_string(),
                 method: r.method.clone(),
+                affected_rows: 1,
+                runs: r.run.to_string(),
+                depths: r.depth.to_string(),
                 warning_type: "path_compatibility_violation".into(),
+                reason: "a root-to-leaf path mixes incompatible certified theories".into(),
                 message: "a root-to-leaf path mixes incompatible certified theories".into(),
                 value: r.path_theory_state.clone(),
             });
@@ -585,37 +605,69 @@ fn collect_result_warnings(rows: &[ResultRow], warnings: &mut Vec<BenchmarkWarni
                 run: r.run.to_string(),
                 depth: r.depth.to_string(),
                 method: r.method.clone(),
+                affected_rows: 1,
+                runs: r.run.to_string(),
+                depths: r.depth.to_string(),
                 warning_type: "high_accuracy_tiny_tree".into(),
+                reason: "accuracy >= 0.99 and tree_nodes <= 3".into(),
                 message: "accuracy >= 0.99 and tree_nodes <= 3".into(),
                 value: r.accuracy.to_string(),
             });
         }
     }
-    let mut methods: Vec<_> = rows.iter().map(|r| r.method.clone()).collect();
-    methods.sort();
-    methods.dedup();
-    for method in methods {
-        let selected: Vec<_> = rows.iter().filter(|r| r.method == method).collect();
+    let mut groups: BTreeMap<(&str, &str), Vec<&ResultRow>> = BTreeMap::new();
+    for row in rows {
+        groups
+            .entry((row.dataset.as_str(), row.method.as_str()))
+            .or_default()
+            .push(row);
+    }
+    for ((dataset, method), selected) in groups {
+        let runs = selected
+            .iter()
+            .map(|row| row.run)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|run| run.to_string())
+            .collect::<Vec<_>>()
+            .join("|");
+        let depths = selected
+            .iter()
+            .map(|row| row.depth)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|depth| depth.to_string())
+            .collect::<Vec<_>>()
+            .join("|");
         if !selected.is_empty() && selected.iter().all(|r| r.tree_nodes == 1) {
+            let reason = "method has tree_nodes == 1 for every row in this dataset slice";
             warnings.push(BenchmarkWarning {
-                dataset: String::new(),
+                dataset: dataset.into(),
                 run: String::new(),
                 depth: String::new(),
-                method: method.clone(),
+                method: method.into(),
+                affected_rows: selected.len(),
+                runs: runs.clone(),
+                depths: depths.clone(),
                 warning_type: "method_all_constant_trees".into(),
-                message: "method has tree_nodes == 1 for all rows in this benchmark slice".into(),
+                reason: reason.into(),
+                message: reason.into(),
                 value: selected.len().to_string(),
             });
         }
         if !selected.is_empty() && selected.iter().all(|r| r.mean_axp_length == 0.0) {
+            let reason = "method has mean_axp_length == 0 for every row in this dataset slice";
             warnings.push(BenchmarkWarning {
-                dataset: String::new(),
+                dataset: dataset.into(),
                 run: String::new(),
                 depth: String::new(),
-                method,
+                method: method.into(),
+                affected_rows: selected.len(),
+                runs,
+                depths,
                 warning_type: "method_all_zero_axp".into(),
-                message: "method has mean_axp_length == 0 for all rows in this benchmark slice"
-                    .into(),
+                reason: reason.into(),
+                message: reason.into(),
                 value: selected.len().to_string(),
             });
         }
@@ -657,19 +709,32 @@ fn write_metadata_csv(path: impl AsRef<Path>, metadata: &[DatasetMetadata]) -> R
 fn write_warnings_csv(path: impl AsRef<Path>, warnings: &[BenchmarkWarning]) -> Result<()> {
     for w in warnings {
         eprintln!(
-            "benchmark warning [{}] dataset={} run={} depth={} method={} value={}: {}",
-            w.warning_type, w.dataset, w.run, w.depth, w.method, w.value, w.message
+            "benchmark warning [{}] dataset={} method={} affected_rows={} runs={} depths={} value={}: {}",
+            w.warning_type,
+            w.dataset,
+            w.method,
+            w.affected_rows,
+            w.runs,
+            w.depths,
+            w.value,
+            w.reason
         );
     }
-    let mut out = String::from("dataset,run,depth,method,warning_type,message,value\n");
+    let mut out = String::from(
+        "dataset,run,depth,method,affected_rows,runs,depths,warning_type,reason,message,value\n",
+    );
     for w in warnings {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&w.dataset),
             w.run,
             w.depth,
             w.method,
+            w.affected_rows,
+            csv_escape(&w.runs),
+            csv_escape(&w.depths),
             w.warning_type,
+            csv_escape(&w.reason),
             csv_escape(&w.message),
             csv_escape(&w.value)
         ));
@@ -939,4 +1004,58 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
     }
     fs::write(path, out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod warning_tests {
+    use super::*;
+
+    fn row(dataset: &str, run: usize, depth: usize) -> ResultRow {
+        ResultRow {
+            dataset: dataset.into(),
+            method: "cals".into(),
+            run,
+            depth,
+            tree_nodes: 1,
+            mean_axp_length: 0.0,
+            path_certified: true,
+            ..ResultRow::default()
+        }
+    }
+
+    #[test]
+    fn all_constant_warning_preserves_dataset_and_group_dimensions() {
+        let rows = vec![row("forest-fires-un", 0, 5), row("forest-fires-un", 1, 7)];
+        let mut warnings = Vec::new();
+        collect_result_warnings(&rows, &mut warnings);
+        let warning = warnings
+            .iter()
+            .find(|warning| warning.warning_type == "method_all_constant_trees")
+            .unwrap();
+        assert_eq!(warning.dataset, "forest-fires-un");
+        assert_eq!(warning.method, "cals");
+        assert_eq!(warning.affected_rows, 2);
+        assert_eq!(warning.runs, "0|1");
+        assert_eq!(warning.depths, "5|7");
+        assert!(!warning.reason.is_empty());
+    }
+
+    #[test]
+    fn all_zero_axp_warning_preserves_each_dataset_key() {
+        let rows = vec![row("seismic_bumps-bin", 0, 5), row("wine1-un", 0, 5)];
+        let mut warnings = Vec::new();
+        collect_result_warnings(&rows, &mut warnings);
+        let datasets = warnings
+            .iter()
+            .filter(|warning| warning.warning_type == "method_all_zero_axp")
+            .map(|warning| warning.dataset.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(datasets, BTreeSet::from(["seismic_bumps-bin", "wine1-un"]));
+        assert!(warnings
+            .iter()
+            .filter(|warning| warning.warning_type == "method_all_zero_axp")
+            .all(|warning| warning.affected_rows == 1
+                && warning.runs == "0"
+                && warning.depths == "5"));
+    }
 }

@@ -188,7 +188,16 @@ pub struct BenchmarkWarning {
     pub run: String,
     pub depth: String,
     pub method: String,
+    /// Number of benchmark rows represented by this warning.
+    pub affected_rows: usize,
+    /// Sorted, pipe-delimited run identifiers, or `all` for metadata warnings.
+    pub runs: String,
+    /// Sorted, pipe-delimited depth identifiers, or `all` for metadata warnings.
+    pub depths: String,
     pub warning_type: String,
+    /// Stable human-readable explanation of why the warning was emitted.
+    pub reason: String,
+    /// Backward-compatible alias retained in the benchmark CSV.
     pub message: String,
     pub value: String,
 }
