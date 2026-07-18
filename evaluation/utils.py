@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
@@ -57,6 +58,40 @@ def safe_numeric(series: pd.Series, *, column: str) -> pd.Series:
     if not np.isfinite(values).all():
         raise ValueError(f"column {column!r} contains non-finite values")
     return converted
+
+
+def safe_nonnegative_integers(
+    series: pd.Series,
+    *,
+    column: str,
+    maximum: int = np.iinfo(np.int64).max,
+) -> pd.Series:
+    """Parse bounded counts without lossy floating-point range checks."""
+
+    parsed: list[int] = []
+    for raw in series:
+        if pd.isna(raw) or isinstance(raw, (bool, np.bool_)):
+            raise ValueError(
+                f"column {column!r} must contain non-negative integers"
+            )
+        try:
+            value = Decimal(str(raw).strip())
+        except (InvalidOperation, ValueError):
+            raise ValueError(
+                f"column {column!r} must contain non-negative integers"
+            ) from None
+        if (
+            not value.is_finite()
+            or value != value.to_integral_value()
+            or value < 0
+            or value > maximum
+        ):
+            raise ValueError(
+                f"column {column!r} must contain non-negative integers"
+            )
+        parsed.append(int(value))
+    dtype = np.int64 if maximum <= np.iinfo(np.int64).max else np.uint64
+    return pd.Series(parsed, index=series.index, dtype=dtype, name=series.name)
 
 
 def sha256_file(path: Path) -> str:

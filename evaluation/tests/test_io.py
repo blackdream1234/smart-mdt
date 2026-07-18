@@ -70,3 +70,101 @@ def test_invalid_full_results_fail_informatively(
     frame.to_csv(path, index=False)
     with pytest.raises(EvaluationDataError, match=message):
         load_benchmark_folder(benchmark_dir)
+
+
+def test_incomplete_method_or_dataset_grid_is_rejected(
+    benchmark_dir: Path,
+) -> None:
+    path = benchmark_dir / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame = frame.drop(index=frame.index[0])
+    frame.to_csv(path, index=False)
+    with pytest.raises(EvaluationDataError, match="incomplete method set"):
+        load_benchmark_folder(benchmark_dir)
+
+
+def test_fractional_count_fields_are_rejected(
+    benchmark_dir: Path,
+) -> None:
+    path = benchmark_dir / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame["tree_nodes"] = frame["tree_nodes"].astype(float)
+    frame.loc[0, "tree_nodes"] = 1.5
+    frame.to_csv(path, index=False)
+    with pytest.raises(EvaluationDataError, match="non-negative integers"):
+        load_benchmark_folder(benchmark_dir)
+
+
+def test_partial_per_row_diagnostics_are_rejected(
+    benchmark_dir: Path,
+) -> None:
+    path = benchmark_dir / "search_diagnostics.csv"
+    frame = pd.read_csv(path).iloc[1:]
+    frame.to_csv(path, index=False)
+    with pytest.raises(EvaluationDataError, match="does not cover full_results"):
+        load_benchmark_folder(benchmark_dir)
+
+
+def test_best_certified_is_a_supported_empirical_method(
+    tmp_path: Path,
+) -> None:
+    benchmark = create_benchmark(tmp_path / "best-certified", optional=False)
+    path = benchmark / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame.loc[frame["method"] == "smart_certified", "method"] = "best-certified"
+    frame.to_csv(path, index=False)
+
+    data = load_benchmark_folder(benchmark)
+    assert "best-certified" in set(data.results["method"])
+
+
+@pytest.mark.parametrize(
+    ("filename", "column", "value", "message"),
+    (
+        (
+            "search_diagnostics.csv",
+            "nodes_using_greedy_selection",
+            -1,
+            "non-negative integers",
+        ),
+        (
+            "search_diagnostics.csv",
+            "nodes_using_greedy_selection",
+            1.5,
+            "non-negative integers",
+        ),
+        (
+            "cache_diagnostics.csv",
+            "candidate_hits",
+            "9223372036854775808",
+            "non-negative integers",
+        ),
+        (
+            "pruning_diagnostics.csv",
+            "validation_accuracy_after",
+            1.1,
+            r"values must lie in \[0, 1\]",
+        ),
+        (
+            "benchmark_warnings.csv",
+            "affected_rows",
+            -1,
+            "non-negative integers",
+        ),
+    ),
+)
+def test_optional_diagnostic_semantic_domains_are_enforced(
+    benchmark_dir: Path,
+    filename: str,
+    column: str,
+    value: object,
+    message: str,
+) -> None:
+    path = benchmark_dir / filename
+    frame = pd.read_csv(path)
+    frame[column] = frame[column].astype(object)
+    frame.loc[0, column] = value
+    frame.to_csv(path, index=False)
+
+    with pytest.raises(EvaluationDataError, match=message):
+        load_benchmark_folder(benchmark_dir)

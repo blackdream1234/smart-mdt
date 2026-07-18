@@ -68,6 +68,14 @@ pub fn run_quick(output: impl AsRef<Path>) -> Result<Vec<ResultRow>> {
 
 /// Runs the full recursive `.dl8` dataset benchmark protocol.
 pub fn run_full_benchmark(cfg: &BenchmarkConfig) -> Result<Vec<ResultRow>> {
+    if cfg.runs == 0 || cfg.depths.is_empty() || cfg.methods.is_empty() {
+        return Err(SmartMdtError::InvalidInput(
+            "benchmark requires at least one run, depth, and method".into(),
+        ));
+    }
+    for method in &cfg.methods {
+        method_policy(method)?;
+    }
     let files = discover_dl8_files(&cfg.data_dir)?;
     if files.is_empty() {
         return Err(SmartMdtError::InvalidInput(format!(
@@ -136,55 +144,60 @@ fn discover_dl8_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn method_policy(method: &str) -> Option<(LanguagePolicy, LanguageFamily, Backend)> {
-    match method {
-        "unary" => Some((
+fn method_policy(method: &str) -> Result<(LanguagePolicy, LanguageFamily, Backend)> {
+    let policy = match method {
+        "unary" => (
             LanguagePolicy::UnaryOnly,
             LanguageFamily::Unary,
             Backend::StructuralHorn,
-        )),
-        "horn" => Some((
+        ),
+        "horn" => (
             LanguagePolicy::HornOnly,
             LanguageFamily::Horn,
             Backend::StructuralHorn,
-        )),
-        "antihorn" => Some((
+        ),
+        "antihorn" => (
             LanguagePolicy::AntiHornOnly,
             LanguageFamily::AntiHorn,
             Backend::StructuralAntiHorn,
-        )),
-        "square2cnf" => Some((
+        ),
+        "square2cnf" => (
             LanguagePolicy::Square2CnfOnly,
             LanguageFamily::Square2Cnf,
             Backend::TwoSat,
-        )),
-        "affine" => Some((
+        ),
+        "affine" => (
             LanguagePolicy::AffineOnly,
             LanguageFamily::Affine,
             Backend::Gf2Gaussian,
-        )),
-        "smart_certified" => Some((
+        ),
+        "smart_certified" => (
             LanguagePolicy::SmartCertified,
             LanguageFamily::SmartCertified,
             Backend::PathCertified,
-        )),
-        "cals" => Some((
+        ),
+        "cals" => (
             LanguagePolicy::SmartCertified,
             LanguageFamily::SmartCertified,
             Backend::PathCertified,
-        )),
-        "cals_compact_explain" => Some((
+        ),
+        "cals_compact_explain" => (
             LanguagePolicy::SmartCertified,
             LanguageFamily::SmartCertified,
             Backend::PathCertified,
-        )),
-        "best-certified" => Some((
+        ),
+        "best-certified" => (
             LanguagePolicy::BestCertifiedPerNode,
-            LanguageFamily::Unary,
-            Backend::StructuralHorn,
-        )),
-        _ => None,
-    }
+            LanguageFamily::EmpiricalMixed,
+            Backend::EmpiricalMixed,
+        ),
+        _ => {
+            return Err(SmartMdtError::InvalidInput(format!(
+                "unknown benchmark method {method}"
+            )))
+        }
+    };
+    Ok(policy)
 }
 
 fn compatible_family_count_for_policy(policy: LanguagePolicy) -> usize {
@@ -281,10 +294,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
         let (train, test) = split_train_test(ds, seed.wrapping_add(run as u64))?;
         for &depth in depths {
             for method in methods {
-                let Some((policy, declared_family, declared_backend)) = method_policy(method)
-                else {
-                    continue;
-                };
+                let (policy, declared_family, declared_backend) = method_policy(method)?;
                 let random_seed = seed.wrapping_add(run as u64);
                 let cfg = if method == "cals" {
                     cals.learner_config(depth, random_seed)
@@ -294,6 +304,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     LearnerConfig {
                         max_depth: depth,
                         language_policy: policy,
+                        theorem_mode: policy != LanguagePolicy::BestCertifiedPerNode,
                         random_seed,
                         ..LearnerConfig::default()
                     }
@@ -317,11 +328,16 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 };
 
                 let axp_start = Instant::now();
-                let final_axps = extract_final_tree_axps(&tree, &test.features, 8, true);
+                // These fields are dataset-level AXp metrics, so audit every
+                // test row. A fixed prefix is order-dependent and is not a
+                // dataset mean.
+                let final_axps =
+                    extract_final_tree_axps(&tree, &test.features, test.features.rows(), true);
                 let mean_axp_length = final_axps.mean_length;
                 let max_axp_length = final_axps.max_length;
                 let final_axp_rows = final_axps.results.len();
                 let mut theorem_certified = path_certified && final_axps.theorem_certified;
+                theorem_certified &= policy != LanguagePolicy::BestCertifiedPerNode;
                 let axp_time = if measure_times {
                     axp_start.elapsed().as_secs_f64()
                 } else {
@@ -382,13 +398,17 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                 let search_time = (train_time - pruning_time - axp_rerank_time).max(0.0);
                 let empirical_fallback_used = false;
                 let incompatible_cached_subtree_reused = false;
-                let theorem_rejection_reason = theorem_rejection_reason(
-                    theorem_certified,
-                    path_certified,
-                    all_predicates_backend_allowed,
-                    empirical_fallback_used,
-                    incompatible_cached_subtree_reused,
-                );
+                let theorem_rejection_reason = if policy == LanguagePolicy::BestCertifiedPerNode {
+                    "per-node family selection does not certify a common path theory".into()
+                } else {
+                    theorem_rejection_reason(
+                        theorem_certified,
+                        path_certified,
+                        all_predicates_backend_allowed,
+                        empirical_fallback_used,
+                        incompatible_cached_subtree_reused,
+                    )
+                };
                 rows.push(ResultRow {
                     dataset: dataset_name.to_string(),
                     run,
@@ -620,11 +640,11 @@ fn collect_metadata_warnings(meta: &DatasetMetadata, warnings: &mut Vec<Benchmar
             depths: "all".into(),
             warning_type: "feature_label_leakage".into(),
             reason: format!(
-                "feature columns equal binarized label: {}",
+                "feature columns equal the raw/binarized label or binary complement: {}",
                 meta.feature_equal_to_label_indices
             ),
             message: format!(
-                "feature columns equal binarized label: {}",
+                "feature columns equal the raw/binarized label or binary complement: {}",
                 meta.feature_equal_to_label_indices
             ),
             value: meta.feature_equal_to_label_count.to_string(),
@@ -959,7 +979,7 @@ fn write_summary(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
 }
 
 fn csv_escape(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "'"))
+    format!("\"{}\"", s.replace('"', "\"\""))
 }
 
 fn method_label(method: &str) -> &str {
@@ -997,9 +1017,16 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
         } else {
             "empirical_or_adaptive"
         };
-        let axp_rate = if r.theorem_certified { 1.0 } else { 0.0 };
-        let n_success = usize::from(r.theorem_certified);
-        let n_fail = usize::from(!r.theorem_certified);
+        // Certified extraction explicitly re-checks sufficiency and
+        // single-deletion minimality for every reported AXp. For rejected rows
+        // no empirical rate was measured, so emit NaN rather than a false 0%.
+        let axp_rate = if r.theorem_certified { "1" } else { "NaN" };
+        let n_success = if r.theorem_certified {
+            r.final_axp_rows
+        } else {
+            0
+        };
+        let n_fail = 0usize;
         let rejected_reason = if theorem_table_filter(r) {
             ""
         } else if r.theorem_rejection_reason.is_empty() {
@@ -1038,14 +1065,14 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             0.0f64.to_string(),
             r.tree_nodes.to_string(),
             r.mean_axp_length.to_string(),
-            axp_rate.to_string(),
-            axp_rate.to_string(),
+            axp_rate.into(),
+            axp_rate.into(),
             n_success.to_string(),
             n_fail.to_string(),
             format!("{:?}", r.backend),
             path_certificate(r.backend).into(),
             csv_escape(rejected_reason),
-            true.to_string(),
+            (r.method != "best-certified").to_string(),
             r.random_state.to_string(),
             r.n_runs.to_string(),
             r.train_test_split_protocol.clone(),
@@ -1164,5 +1191,10 @@ mod warning_tests {
             .all(|warning| warning.affected_rows == 1
                 && warning.runs == "0"
                 && warning.depths == "5"));
+    }
+
+    #[test]
+    fn csv_escaping_preserves_embedded_quotes() {
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
     }
 }

@@ -31,6 +31,7 @@ METHOD_LABELS: dict[str, str] = {
     "antihorn": "AntiHorn",
     "square2cnf": "Square2CNF",
     "affine": "Boolean Affine/GF(2)",
+    "best-certified": "Best certified per node",
     "smart_certified": "SmartCertified",
     "cals": "CALS-MDT",
     "cals_compact_explain": "CompactExplain",

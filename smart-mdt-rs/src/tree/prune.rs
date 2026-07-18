@@ -219,11 +219,34 @@ pub fn prune_with_validation(
     validation: &Dataset,
     config: &PruningConfig,
 ) -> (TreeNode, PruningDiagnostics) {
+    let mut expected_classes = validation
+        .labels
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    collect_tree_classes(original, &mut expected_classes);
+    let expected_classes = expected_classes.into_iter().collect::<Vec<_>>();
+    prune_with_validation_for_classes(original, validation, config, &expected_classes)
+}
+
+pub(crate) fn prune_with_validation_for_classes(
+    original: &TreeNode,
+    validation: &Dataset,
+    config: &PruningConfig,
+    expected_classes: &[ClassId],
+) -> (TreeNode, PruningDiagnostics) {
     let started = Instant::now();
     let all_rows = (0..validation.labels.len()).collect::<Vec<_>>();
     let mut audit = PruningAudit::default();
-    let (pruned, root_reason) =
-        prune_node(original, validation, &all_rows, config, &mut audit, true);
+    let (pruned, root_reason) = prune_node(
+        original,
+        validation,
+        &all_rows,
+        config,
+        expected_classes,
+        &mut audit,
+        true,
+    );
     let before_metrics = classification_metrics(original, validation, &all_rows);
     let after_metrics = classification_metrics(&pruned, validation, &all_rows);
     let diagnostics = PruningDiagnostics {
@@ -257,6 +280,7 @@ fn prune_node(
     validation: &Dataset,
     rows: &[usize],
     config: &PruningConfig,
+    expected_classes: &[ClassId],
     audit: &mut PruningAudit,
     is_root: bool,
 ) -> (TreeNode, PruningReason) {
@@ -273,8 +297,24 @@ fn prune_node(
         .iter()
         .copied()
         .partition(|&row| predicate.eval(&validation.features, row));
-    let (left_pruned, _) = prune_node(left, validation, &left_rows, config, audit, false);
-    let (right_pruned, _) = prune_node(right, validation, &right_rows, config, audit, false);
+    let (left_pruned, _) = prune_node(
+        left,
+        validation,
+        &left_rows,
+        config,
+        expected_classes,
+        audit,
+        false,
+    );
+    let (right_pruned, _) = prune_node(
+        right,
+        validation,
+        &right_rows,
+        config,
+        expected_classes,
+        audit,
+        false,
+    );
     let candidate = TreeNode::Internal {
         predicate: predicate.clone(),
         left: Box::new(left_pruned),
@@ -285,7 +325,15 @@ fn prune_node(
         class: *majority_class,
         samples: subtree_samples(tree),
     };
-    let decision = pruning_decision(&candidate, &leaf, validation, rows, config, is_root);
+    let decision = pruning_decision(
+        &candidate,
+        &leaf,
+        validation,
+        rows,
+        config,
+        expected_classes,
+        is_root,
+    );
     *audit.reason_counts.entry(decision).or_default() += 1;
     if decision == PruningReason::ObjectiveImproved {
         audit.step += 1;
@@ -310,6 +358,7 @@ fn pruning_decision(
     validation: &Dataset,
     rows: &[usize],
     config: &PruningConfig,
+    expected_classes: &[ClassId],
     is_root: bool,
 ) -> PruningReason {
     if !legacy_should_prune(subtree, leaf, validation, rows, config) {
@@ -322,10 +371,14 @@ fn pruning_decision(
     let subtree_metrics = classification_metrics(subtree, validation, rows);
     let leaf_metrics = classification_metrics(leaf, validation, rows);
     let support_is_sufficient = rows.len() >= aware.minimum_validation_samples
-        && subtree_metrics
-            .class_support
-            .values()
-            .all(|&support| support >= aware.minimum_validation_samples_per_class);
+        && expected_classes.iter().all(|class| {
+            subtree_metrics
+                .class_support
+                .get(class)
+                .copied()
+                .unwrap_or(0)
+                >= aware.minimum_validation_samples_per_class
+        });
     if !support_is_sufficient && aware.preserve_subtree_when_evidence_insufficient {
         return PruningReason::InsufficientValidationSupport;
     }
@@ -514,6 +567,24 @@ fn subtree_samples(tree: &TreeNode) -> usize {
     match tree {
         TreeNode::Leaf { samples, .. } => *samples,
         TreeNode::Internal { left, right, .. } => subtree_samples(left) + subtree_samples(right),
+    }
+}
+
+fn collect_tree_classes(tree: &TreeNode, classes: &mut std::collections::BTreeSet<ClassId>) {
+    match tree {
+        TreeNode::Leaf { class, .. } => {
+            classes.insert(*class);
+        }
+        TreeNode::Internal {
+            left,
+            right,
+            majority_class,
+            ..
+        } => {
+            classes.insert(*majority_class);
+            collect_tree_classes(left, classes);
+            collect_tree_classes(right, classes);
+        }
     }
 }
 

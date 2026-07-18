@@ -1,6 +1,10 @@
-use super::{weak_axp_check, AxpResult};
+use super::{
+    weak_axp::{backend_meta, tree_scope_fits_domain},
+    weak_axp_check, AxpResult,
+};
 use crate::{
     data::ColumnMajorMatrix,
+    logic::CertificateMetadata,
     tree::{predict_row, TreeNode},
     FeatureId,
 };
@@ -13,6 +17,21 @@ pub fn extract_axp_deletion(
     theorem_mode: bool,
 ) -> AxpResult {
     let start = Instant::now();
+    if row >= domain.rows() || !tree_scope_fits_domain(tree, domain.cols()) {
+        let meta = backend_meta(tree, theorem_mode);
+        let reason = if row >= domain.rows() {
+            "AXp extraction row is out of bounds"
+        } else {
+            "AXp extraction tree scope is out of bounds"
+        };
+        return AxpResult::new(
+            Vec::new(),
+            0,
+            0,
+            CertificateMetadata::rejected(theorem_mode, meta.language_family, reason),
+            start.elapsed(),
+        );
+    }
     let instance: Vec<f64> = (0..domain.cols())
         .map(|j| domain.get(row, j as u32))
         .collect();

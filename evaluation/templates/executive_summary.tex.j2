@@ -34,7 +34,8 @@ Shortest AXp & {{ best_axp.method_label_tex }} &
 \subsection*{Certification}
 {{ certification_sentence_tex }}
 
-Tests are paired by dataset, run, and depth. Confidence intervals use
-{{ bootstrap_resamples }} deterministic bootstrap resamples with seed
+Repeated runs and depths are averaged within each dataset. Tests are paired
+over independent dataset blocks. Confidence intervals use
+{{ bootstrap_resamples }} deterministic dataset-block bootstrap resamples with seed
 {{ seed }}.
 \end{document}

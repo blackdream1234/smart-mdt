@@ -6,7 +6,7 @@ use smart_mdt_rs::{
 #[test]
 fn axp_deletion_runs() {
     let ds = Dataset::new(
-        ColumnMajorMatrix::from_rows(&[vec![0.0], vec![1.0], vec![2.0], vec![3.0]]).unwrap(),
+        ColumnMajorMatrix::from_rows(&[vec![0.0], vec![0.0], vec![1.0], vec![1.0]]).unwrap(),
         vec![0, 0, 1, 1],
     )
     .unwrap();

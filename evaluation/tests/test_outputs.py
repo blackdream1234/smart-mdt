@@ -107,8 +107,38 @@ def test_end_to_end_report_handles_missing_optional_files(tmp_path: Path) -> Non
         encoding="utf-8"
     )
     assert "search_diagnostics.csv" in report
+    assert "feature_label_leakage | -- | 3 | -- | 0 | not_audited" in report
+    executive = (output / "report" / "executive_summary.md").read_text(
+        encoding="utf-8"
+    )
+    assert "unverified feature-label leakage findings" in executive
     search_table = (output / "tables" / "search_summary.tex").read_text(
         encoding="utf-8"
     )
     assert "No data available" in search_table
     assert (output / "figures" / "search_diagnostics.pdf").is_file()
+
+
+def test_report_handles_no_configured_pairwise_comparison(tmp_path: Path) -> None:
+    benchmark = create_benchmark(tmp_path / "one-method", optional=False)
+    path = benchmark / "full_results.csv"
+    results = pd.read_csv(path)
+    results = results.loc[results["method"] == "smart_certified"]
+    results.to_csv(path, index=False)
+
+    output = tmp_path / "one-method-output"
+    build_report(
+        EvaluationConfig(
+            benchmark,
+            output,
+            bootstrap_resamples=2,
+            seed=11,
+        )
+    )
+
+    significance = pd.read_csv(output / "tables" / "significance.csv")
+    assert significance.empty
+    rendered = (output / "tables" / "significance.tex").read_text(
+        encoding="utf-8"
+    )
+    assert "No data available" in rendered

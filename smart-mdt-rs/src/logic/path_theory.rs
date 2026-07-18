@@ -40,6 +40,9 @@ impl PathTheoryState {
 /// Returns whether `predicate` can extend a path in `state` without mixing
 /// incompatible tractable languages.
 pub fn candidate_is_compatible(state: PathTheoryState, predicate: &Predicate) -> bool {
+    if !predicate.certificate_shape_is_valid() {
+        return false;
+    }
     match predicate {
         Predicate::Unary(_) => true,
         Predicate::HornClause(_) => {

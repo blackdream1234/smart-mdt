@@ -1,9 +1,9 @@
 use super::{
-    deterministic_pruning_split, predict_row, prune_with_validation, AdaptiveLanguageConfig,
-    AxpRerankConfig, BeamSearchDiagnostics, CacheConfig, CachedSubtree, CandidateGenerationConfig,
-    ConditionalCandidateSearchConfig, FrontierLeaf, NodeView, ParallelConfig, PartialTree,
-    PartialTreeState, PruningConfig, SearchStateKey, TrainingContext, TrainingDiagnostics,
-    TreeNode, TreeSearchConfig, TreeSearchStrategy,
+    deterministic_pruning_split, predict_row, prune_with_validation_for_classes,
+    AdaptiveLanguageConfig, AxpRerankConfig, BeamSearchDiagnostics, CacheConfig, CachedSubtree,
+    CandidateGenerationConfig, ConditionalCandidateSearchConfig, FrontierLeaf, NodeView,
+    ParallelConfig, PartialTree, PartialTreeState, PruningConfig, SearchStateKey, TrainingContext,
+    TrainingDiagnostics, TreeNode, TreeSearchConfig, TreeSearchStrategy,
 };
 use crate::{
     data::Dataset,
@@ -94,8 +94,22 @@ pub fn learn_with_diagnostics(
             "empirical policy in theorem mode".into(),
         ));
     }
-    let pruning_split = if cfg.pruning.enabled {
-        deterministic_pruning_split(data, cfg.pruning.validation_fraction, cfg.random_seed).ok()
+    if cfg.tree_search.node_budget == 0 {
+        return Err(SmartMdtError::InvalidInput(
+            "tree-search node budget must be at least one".into(),
+        ));
+    }
+    if cfg.pruning.enabled && !(0.0..1.0).contains(&cfg.pruning.validation_fraction) {
+        return Err(SmartMdtError::InvalidInput(
+            "pruning validation fraction must be in (0,1)".into(),
+        ));
+    }
+    let pruning_split = if cfg.pruning.enabled && data.labels.len() >= 4 {
+        Some(deterministic_pruning_split(
+            data,
+            cfg.pruning.validation_fraction,
+            cfg.random_seed,
+        )?)
     } else {
         None
     };
@@ -104,14 +118,30 @@ pub fn learn_with_diagnostics(
         .map_or_else(|| data.clone(), |split| split.grow.clone());
     let context = TrainingContext::with_cache_config(Arc::new(grow_data), cfg.cache.clone());
     let grown_tree = match cfg.tree_search.strategy {
-        TreeSearchStrategy::Greedy => build(&context, cfg, context.root_view())?,
+        TreeSearchStrategy::Greedy => build(
+            &context,
+            cfg,
+            context.root_view(),
+            cfg.tree_search.node_budget.max(1),
+        )?,
         TreeSearchStrategy::SparseLookahead
         | TreeSearchStrategy::SelectiveLookahead
         | TreeSearchStrategy::GlobalBeam => build_with_tree_search(&context, cfg)?,
     };
     let tree = if let Some(split) = pruning_split {
-        let (tree, mut diagnostics) =
-            prune_with_validation(&grown_tree, &split.validation, &cfg.pruning);
+        let expected_classes = data
+            .labels
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let (tree, mut diagnostics) = prune_with_validation_for_classes(
+            &grown_tree,
+            &split.validation,
+            &cfg.pruning,
+            &expected_classes,
+        );
         diagnostics.grow_samples = split.grow.labels.len();
         diagnostics.validation_samples = split.validation.labels.len();
         diagnostics.validation_indices = split.validation_indices;
@@ -120,6 +150,11 @@ pub fn learn_with_diagnostics(
     } else {
         grown_tree
     };
+    if cfg.theorem_mode && !tree_is_certified(&tree) {
+        return Err(SmartMdtError::TheoremRejected(
+            "learned tree failed path certification".into(),
+        ));
+    }
     context.record_selected_tree(&tree);
     Ok((tree, context.diagnostics()))
 }
@@ -207,8 +242,13 @@ fn candidate_cache_is_warranted(cfg: &LearnerConfig) -> bool {
             .conditional_search
             .candidate_cache_minimum_expected_reuse
 }
-fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Result<TreeNode> {
-    let state_key = search_state_key(&node, cfg, cfg.tree_search.node_budget);
+fn build(
+    context: &TrainingContext,
+    cfg: &LearnerConfig,
+    node: NodeView,
+    subtree_node_budget: usize,
+) -> Result<TreeNode> {
+    let state_key = search_state_key(&node, cfg, subtree_node_budget);
     if let Some(cached) = context.best_subtree_cached(&state_key) {
         if cfg.theorem_mode && !cached.path_certified {
             return Err(SmartMdtError::TheoremRejected(
@@ -221,7 +261,8 @@ fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Resu
     let sample_count = statistics.sample_count;
     let class_counts = statistics.class_counts;
     let majority_class = statistics.majority_class;
-    if node.depth >= cfg.max_depth
+    if subtree_node_budget < 3
+        || node.depth >= cfg.max_depth
         || sample_count < cfg.min_samples_split
         || class_counts.iter().filter(|&&count| count > 0).count() <= 1
     {
@@ -255,6 +296,11 @@ fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Resu
     // Each recursive call receives its own copy, so descendants of one branch
     // cannot commit the sibling branch to a theory.
     context.record_child_views();
+    let left_budget = if subtree_node_budget == usize::MAX {
+        usize::MAX
+    } else {
+        subtree_node_budget.saturating_sub(2).max(1)
+    };
     let left = build(
         context,
         cfg,
@@ -263,7 +309,16 @@ fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Resu
             depth: node.depth + 1,
             theory_state: child_state,
         },
+        left_budget,
     )?;
+    let right_budget = if subtree_node_budget == usize::MAX {
+        usize::MAX
+    } else {
+        subtree_node_budget
+            .saturating_sub(1)
+            .saturating_sub(left.nodes())
+            .max(1)
+    };
     let right = build(
         context,
         cfg,
@@ -272,6 +327,7 @@ fn build(context: &TrainingContext, cfg: &LearnerConfig, node: NodeView) -> Resu
             depth: node.depth + 1,
             theory_state: child_state,
         },
+        right_budget,
     )?;
     let tree = TreeNode::Internal {
         predicate: best.predicate,
@@ -324,7 +380,12 @@ fn build_with_tree_search(context: &TrainingContext, cfg: &LearnerConfig) -> Res
     // A complete greedy tree is the deterministic anytime incumbent. This also
     // guarantees that widening the tree beam cannot worsen the configured
     // complete-tree training objective.
-    let greedy = build(context, cfg, context.root_view())?;
+    let greedy = build(
+        context,
+        cfg,
+        context.root_view(),
+        cfg.tree_search.node_budget.max(1),
+    )?;
     let root = context.root_view();
     let root_counts = context.class_counts(&root)?;
     let root_majority = majority(&root_counts);
@@ -798,6 +859,7 @@ pub fn tree_path_theory_states(tree: &TreeNode) -> Result<Vec<PathTheoryState>> 
     fn visit(
         tree: &TreeNode,
         state: PathTheoryState,
+        path_features: &std::collections::BTreeSet<crate::FeatureId>,
         leaves: &mut Vec<PathTheoryState>,
     ) -> Result<()> {
         match tree {
@@ -809,15 +871,27 @@ pub fn tree_path_theory_states(tree: &TreeNode) -> Result<Vec<PathTheoryState>> 
                 ..
             } => {
                 let next = next_theory_state(state, predicate)?;
-                visit(left, next, leaves)?;
-                visit(right, next, leaves)?;
+                let mut next_features = path_features.clone();
+                next_features.extend(predicate.scope_features());
+                if next == PathTheoryState::AffineGf2 && next_features.len() > 128 {
+                    return Err(SmartMdtError::TheoremRejected(
+                        "GF(2) path contains more than 128 distinct variables".into(),
+                    ));
+                }
+                visit(left, next, &next_features, leaves)?;
+                visit(right, next, &next_features, leaves)?;
             }
         }
         Ok(())
     }
 
     let mut states = Vec::new();
-    visit(tree, PathTheoryState::Uncommitted, &mut states)?;
+    visit(
+        tree,
+        PathTheoryState::Uncommitted,
+        &std::collections::BTreeSet::new(),
+        &mut states,
+    )?;
     states.sort_unstable();
     states.dedup();
     Ok(states)

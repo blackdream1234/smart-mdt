@@ -56,6 +56,28 @@ fn debug_candidates_command_writes_csvs() {
 }
 
 #[test]
+fn unsupported_debug_node_path_is_rejected_instead_of_echoing_root_results() {
+    let mut c = cfg("horn_separable", "unary");
+    c.depth = 3;
+    c.node_path = "LRR".into();
+    c.output = std::env::temp_dir().join(format!(
+        "smart-mdt-debug-unsupported-path-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&c.output);
+    let error = run_debug_candidates(&c).unwrap_err();
+    assert!(format!("{error}").contains("supports only"));
+    assert!(!c.output.join("debug_candidates.csv").exists());
+}
+
+#[test]
+fn unknown_debug_method_is_rejected() {
+    let c = cfg("horn_separable", "typo");
+    let error = run_debug_candidates(&c).unwrap_err();
+    assert!(format!("{error}").contains("unknown certified method"));
+}
+
+#[test]
 fn unary_root_candidates_include_valid_non_empty_splits() {
     let c = cfg("horn_separable", "unary");
     let _ = fs::remove_dir_all(&c.output);

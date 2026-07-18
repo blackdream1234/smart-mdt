@@ -166,6 +166,37 @@ fn every_smart_certified_learned_path_is_compatible() {
     assert!(tree_path_theory_states(&tree).is_ok());
 }
 
+#[test]
+fn theorem_mode_rejects_a_greedy_per_node_tree_with_an_incompatible_path() {
+    let rows = (0..8)
+        .map(|mask| {
+            (0..3)
+                .map(|feature| ((mask >> feature) & 1) as f64)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let labels = vec![0, 1, 1, 0, 1, 0, 0, 0];
+    let data = Dataset::new(ColumnMajorMatrix::from_rows(&rows).unwrap(), labels).unwrap();
+    let config = LearnerConfig {
+        max_depth: 4,
+        beam_width: 12,
+        max_candidates_per_node: 64,
+        language_policy: LanguagePolicy::BestCertifiedPerNode,
+        theorem_mode: false,
+        ..LearnerConfig::default()
+    };
+    let mixed_tree = learn(&data, &config).unwrap();
+    assert!(!tree_is_certified(&mixed_tree));
+    assert!(learn(
+        &data,
+        &LearnerConfig {
+            theorem_mode: true,
+            ..config
+        }
+    )
+    .is_err());
+}
+
 fn smart_row(path_certified: bool) -> ResultRow {
     ResultRow {
         dataset: "d".into(),
@@ -194,6 +225,7 @@ fn smart_row(path_certified: bool) -> ResultRow {
             "Unsupported".into()
         },
         path_certified,
+        all_predicates_backend_allowed: path_certified,
         git_sha: "abc".into(),
         config: "{}".into(),
         random_state: 42,

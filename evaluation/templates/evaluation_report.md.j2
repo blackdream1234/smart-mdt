@@ -11,8 +11,9 @@
 - Confidence level: {{ confidence_percent }}%
 - Missing optional inputs: {{ missing_optional }}
 
-The framework validates the benchmark schema before analysis and pairs methods
-by dataset, run, and depth for every significance test.
+The framework validates the benchmark schema before analysis, averages
+repeated runs and depths within each dataset, and uses datasets as the
+independent blocks for every significance test.
 
 ## Executive findings
 
@@ -38,6 +39,7 @@ by dataset, run, and depth for every significance test.
 Positive differences and effect sizes mean the right-hand method has the larger
 metric value. Whether that is preferable depends on the metric: accuracy is
 maximized, whereas nodes, literals, AXp length, and runtime are minimized.
+Holm-adjusted p-values control family-wise error across the configured tests.
 
 {{ significance_markdown }}
 
@@ -113,8 +115,9 @@ The warning summary contains {{ warning_group_count }} grouped records.
 
 The results should be interpreted jointly: predictive performance alone does
 not establish compactness, speed, explanation quality, or certification.
-Paired tests preserve the dataset/run/depth structure, while bootstrap
-intervals quantify uncertainty in mean paired differences. Effect-size
+Paired tests preserve dataset blocks after averaging repeated runs and depths,
+while bootstrap intervals resample datasets to quantify uncertainty in mean
+paired differences. Effect-size
 magnitudes supplement p-values and should be considered alongside practical
 importance.
 

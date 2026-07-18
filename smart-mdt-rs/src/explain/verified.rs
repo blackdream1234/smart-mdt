@@ -135,6 +135,11 @@ pub fn compile_verified_explanation(
             "verified explanations require a path-certified tree".into(),
         ));
     }
+    if !super::weak_axp::tree_scope_fits_domain(tree, reference.features.cols()) {
+        return Err(SmartMdtError::TheoremRejected(
+            "verified explanation tree references an out-of-bounds feature".into(),
+        ));
+    }
     let axp = extract_axp_deletion(tree, &reference.features, row, true);
     if !axp.metadata.theorem_certified {
         return Err(SmartMdtError::TheoremRejected(

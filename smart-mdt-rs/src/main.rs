@@ -22,17 +22,173 @@ fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
-fn policy(s: &str) -> LanguagePolicy {
+fn validate_cli_args(args: &[String]) -> Result<()> {
+    for name in [
+        "--tree-search",
+        "--score-profile",
+        "--cals-profile",
+        "--audience",
+        "--depths",
+        "--method",
+        "--methods",
+        "--output",
+        "--data",
+        "--dataset",
+        "--node-path",
+    ] {
+        if has_flag(args, name) && arg(args, name).is_none() {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "{name} requires a value"
+            )));
+        }
+    }
+    let usize_args = [
+        "--tree-beam-width",
+        "--candidate-beam-width",
+        "--lookahead-depth",
+        "--node-budget",
+        "--branch-and-bound-threshold",
+        "--cache-max-entries",
+        "--threads",
+        "--axp-shortlist",
+        "--max-depth",
+        "--runs",
+        "--depth",
+        "--top-k",
+        "--max-candidates-per-node",
+        "--beam-width",
+        "--row",
+    ];
+    for name in usize_args {
+        if has_flag(args, name) {
+            let value = arg(args, name).ok_or_else(|| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!("{name} requires a value"))
+            })?;
+            value.parse::<usize>().map_err(|_| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{name} requires a non-negative integer, got {value}"
+                ))
+            })?;
+        }
+    }
+    for name in ["--time-budget-ms", "--seed"] {
+        if has_flag(args, name) {
+            let value = arg(args, name).ok_or_else(|| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!("{name} requires a value"))
+            })?;
+            value.parse::<u64>().map_err(|_| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{name} requires a non-negative integer, got {value}"
+                ))
+            })?;
+        }
+    }
+    for name in [
+        "--balanced-accuracy-epsilon",
+        "--minimum-minority-recall",
+        "--root-collapse-majority-threshold",
+        "--prune-validation-fraction",
+        "--prune-alpha-nodes",
+        "--prune-alpha-leaves",
+        "--prune-alpha-literals",
+        "--accuracy-epsilon",
+    ] {
+        if has_flag(args, name) {
+            let value = arg(args, name).ok_or_else(|| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!("{name} requires a value"))
+            })?;
+            let parsed = value.parse::<f64>().map_err(|_| {
+                smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{name} requires a finite number, got {value}"
+                ))
+            })?;
+            if !parsed.is_finite() {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{name} requires a finite number, got {value}"
+                )));
+            }
+        }
+    }
+    if let Some(depths) = arg(args, "--depths") {
+        if depths.is_empty()
+            || depths
+                .split(',')
+                .any(|depth| depth.trim().parse::<usize>().is_err())
+        {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "--depths requires a comma-separated integer list, got {depths}"
+            )));
+        }
+    }
+    if let Some(methods) = arg(args, "--methods") {
+        if methods.split(',').any(|method| method.trim().is_empty()) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "--methods requires a comma-separated method list, got {methods}"
+            )));
+        }
+    }
+    if let Some(value) = arg(args, "--tree-search") {
+        if !matches!(
+            value.as_str(),
+            "greedy"
+                | "beam"
+                | "lookahead"
+                | "sparse"
+                | "sparse-lookahead"
+                | "selective"
+                | "selective-lookahead"
+        ) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown tree-search strategy {value}"
+            )));
+        }
+    }
+    if let Some(value) = arg(args, "--score-profile") {
+        if !matches!(
+            value.as_str(),
+            "information-gain" | "gain-ratio" | "sparse-certified" | "lookahead-ready"
+        ) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown score profile {value}"
+            )));
+        }
+    }
+    if let Some(value) = arg(args, "--cals-profile") {
+        if !matches!(
+            value.as_str(),
+            "thesis" | "compact-explain" | "compact_explain"
+        ) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown CALS profile {value}"
+            )));
+        }
+    }
+    if let Some(value) = arg(args, "--audience") {
+        if !matches!(
+            value.as_str(),
+            "general" | "clinical" | "engineering" | "management" | "audit" | "technical"
+        ) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown explanation audience {value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn policy(s: &str) -> Result<LanguagePolicy> {
     match s {
-        "unary" => LanguagePolicy::UnaryOnly,
-        "horn" => LanguagePolicy::HornOnly,
-        "antihorn" => LanguagePolicy::AntiHornOnly,
-        "square2cnf" => LanguagePolicy::Square2CnfOnly,
-        "affine" => LanguagePolicy::AffineOnly,
-        "smart_certified" => LanguagePolicy::SmartCertified,
-        "cals" => LanguagePolicy::SmartCertified,
-        "cals_compact_explain" => LanguagePolicy::SmartCertified,
-        _ => LanguagePolicy::BestCertifiedPerNode,
+        "unary" => Ok(LanguagePolicy::UnaryOnly),
+        "horn" => Ok(LanguagePolicy::HornOnly),
+        "antihorn" => Ok(LanguagePolicy::AntiHornOnly),
+        "square2cnf" => Ok(LanguagePolicy::Square2CnfOnly),
+        "affine" => Ok(LanguagePolicy::AffineOnly),
+        "smart_certified" => Ok(LanguagePolicy::SmartCertified),
+        "cals" | "cals_compact_explain" => Ok(LanguagePolicy::SmartCertified),
+        "best-certified" => Ok(LanguagePolicy::BestCertifiedPerNode),
+        _ => Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+            "unknown method {s}"
+        ))),
     }
 }
 
@@ -205,6 +361,7 @@ fn parse_method_list(s: &str) -> Vec<String> {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    validate_cli_args(&args)?;
     match args.get(1).map(String::as_str) {
         Some("train") => {
             let data = arg(&args, "--data").ok_or_else(|| {
@@ -222,7 +379,8 @@ fn main() -> Result<()> {
             } else {
                 LearnerConfig {
                     max_depth,
-                    language_policy: policy(&method),
+                    language_policy: policy(&method)?,
+                    theorem_mode: method != "best-certified",
                     ..LearnerConfig::default()
                 }
             };
@@ -341,7 +499,8 @@ fn main() -> Result<()> {
             } else {
                 LearnerConfig {
                     max_depth,
-                    language_policy: policy(&method),
+                    language_policy: policy(&method)?,
+                    theorem_mode: method != "best-certified",
                     ..LearnerConfig::default()
                 }
             };

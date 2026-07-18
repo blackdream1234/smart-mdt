@@ -218,6 +218,7 @@ def write_evaluation_tables(
             "mean_difference_right_minus_left",
             "wilcoxon_statistic",
             "p_value",
+            "p_value_adjusted_holm",
             "bootstrap_ci_lower",
             "bootstrap_ci_upper",
             "cliffs_delta_right_vs_left",
@@ -233,6 +234,7 @@ def write_evaluation_tables(
             "mean_difference_right_minus_left": "Mean diff.",
             "wilcoxon_statistic": "Wilcoxon W",
             "p_value": "p-value",
+            "p_value_adjusted_holm": "Holm p-value",
             "bootstrap_ci_lower": "Bootstrap lower",
             "bootstrap_ci_upper": "Bootstrap upper",
             "cliffs_delta_right_vs_left": "Cliff's delta",
@@ -252,6 +254,7 @@ def write_evaluation_tables(
             "Mean diff.",
             "Wilcoxon W",
             "p-value",
+            "Holm p-value",
             "Bootstrap lower",
             "Bootstrap upper",
         ]
@@ -269,7 +272,7 @@ def write_evaluation_tables(
     significance_tex.write_text(
         dataframe_to_latex(
             significance_tests,
-            caption="Paired Wilcoxon tests and bootstrap confidence intervals.",
+            caption="Paired Wilcoxon tests with Holm-adjusted p-values and bootstrap confidence intervals.",
             label="tab:significance-tests",
         )
         + "\n"

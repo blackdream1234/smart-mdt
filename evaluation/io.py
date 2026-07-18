@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+import numpy as np
 import pandas as pd
 
 from .config import METHOD_LABELS, OPTIONAL_FILES, OPTIONAL_TEXT_FILES, REQUIRED_FILES
-from .utils import safe_numeric
+from .utils import safe_nonnegative_integers, safe_numeric
 
 
 class EvaluationDataError(ValueError):
@@ -190,6 +191,77 @@ OPTIONAL_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+OPTIONAL_INTEGER_COLUMNS: dict[str, tuple[str, ...]] = {
+    "summary_by_method.csv": ("rows",),
+    "theorem_certified_results.csv": ("run", "depth", "tree_nodes"),
+    "empirical_results.csv": ("run", "depth", "tree_nodes"),
+    "axp_metadata.csv": ("run", "depth", "tree_nodes"),
+    "tuning_diagnostics.csv": ("run", "depth", "tree_nodes"),
+    "benchmark_warnings.csv": ("affected_rows",),
+    "search_diagnostics.csv": (
+        "run",
+        "depth",
+        "nodes_using_greedy_selection",
+        "nodes_using_selective_lookahead",
+        "branch_and_bound_activation_count",
+        "branch_and_bound_avoided_count",
+        "cache_activation_count",
+        "estimated_work_saved",
+    ),
+    "cache_diagnostics.csv": (
+        "run",
+        "depth",
+        "predicate_mask_hits",
+        "predicate_mask_misses",
+        "candidate_hits",
+        "candidate_misses",
+        "subtree_hits",
+        "subtree_misses",
+    ),
+    "family_budget_diagnostics.csv": (
+        "run",
+        "depth",
+        "compatible_family_count",
+    ),
+    "pruning_diagnostics.csv": (
+        "run",
+        "depth",
+        "nodes_before",
+        "nodes_after",
+    ),
+    "beam_diagnostics.csv": (
+        "run",
+        "depth",
+        "candidate_beam_width",
+        "tree_beam_width",
+        "lookahead_depth",
+    ),
+}
+
+OPTIONAL_UINT64_COLUMNS: dict[str, tuple[str, ...]] = {
+    "beam_diagnostics.csv": ("node_budget",),
+}
+
+OPTIONAL_NONNEGATIVE_COLUMNS: dict[str, tuple[str, ...]] = {
+    filename: schema["numeric"] for filename, schema in OPTIONAL_SCHEMAS.items()
+}
+
+OPTIONAL_UNIT_INTERVAL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "summary_by_method.csv": ("accuracy_mean",),
+    "theorem_certified_results.csv": ("accuracy",),
+    "empirical_results.csv": ("accuracy",),
+    "axp_metadata.csv": ("accuracy",),
+    "tuning_diagnostics.csv": ("accuracy",),
+    "pruning_diagnostics.csv": (
+        "validation_accuracy_before",
+        "validation_accuracy_after",
+        "validation_balanced_accuracy_before",
+        "validation_balanced_accuracy_after",
+        "validation_minority_recall_before",
+        "validation_minority_recall_after",
+    ),
+}
+
 
 def _read_csv(path: Path) -> pd.DataFrame:
     try:
@@ -278,6 +350,34 @@ def _validate_results(frame: pd.DataFrame, filename: str) -> pd.DataFrame:
     if (result["fit_time_seconds"] < 0).any():
         raise EvaluationDataError(f"{filename} contains negative fit times")
 
+    for column in ("run", "depth", "tree_nodes", "predicate_literals"):
+        try:
+            result[column] = safe_nonnegative_integers(
+                result[column], column=column
+            )
+        except ValueError as error:
+            raise EvaluationDataError(f"{filename}: {error}") from error
+
+    expected_methods = frozenset(result["method"].unique())
+    method_sets = result.groupby(["dataset", "run", "depth"], sort=True)[
+        "method"
+    ].agg(frozenset)
+    if method_sets.map(lambda methods: methods != expected_methods).any():
+        raise EvaluationDataError(
+            f"{filename} has an incomplete method set for at least one "
+            "dataset/run/depth observation"
+        )
+
+    grids = [
+        frozenset(zip(rows["run"], rows["depth"]))
+        for _, rows in result.groupby("dataset", sort=True)
+    ]
+    expected_grid = grids[0]
+    if any(grid != expected_grid for grid in grids):
+        raise EvaluationDataError(
+            f"{filename} has inconsistent run/depth grids across datasets"
+        )
+
     return result.sort_values(list(RESULT_KEY), kind="mergesort").reset_index(drop=True)
 
 
@@ -327,6 +427,33 @@ def _validate_optional_frame(
         except ValueError as error:
             raise EvaluationDataError(f"{filename}: {error}") from error
 
+    for column in OPTIONAL_INTEGER_COLUMNS.get(filename, ()):
+        try:
+            result[column] = safe_nonnegative_integers(
+                result[column], column=column
+            )
+        except ValueError as error:
+            raise EvaluationDataError(f"{filename}: {error}") from error
+    for column in OPTIONAL_UINT64_COLUMNS.get(filename, ()):
+        try:
+            result[column] = safe_nonnegative_integers(
+                result[column],
+                column=column,
+                maximum=np.iinfo(np.uint64).max,
+            )
+        except ValueError as error:
+            raise EvaluationDataError(f"{filename}: {error}") from error
+    for column in OPTIONAL_NONNEGATIVE_COLUMNS.get(filename, ()):
+        if (result[column] < 0).any():
+            raise EvaluationDataError(
+                f"{filename} column {column!r} must be non-negative"
+            )
+    for column in OPTIONAL_UNIT_INTERVAL_COLUMNS.get(filename, ()):
+        if ((result[column] < 0.0) | (result[column] > 1.0)).any():
+            raise EvaluationDataError(
+                f"{filename} column {column!r} values must lie in [0, 1]"
+            )
+
     key = schema["key"]
     if key and result.duplicated(list(key), keep=False).any():
         example = result.loc[
@@ -371,6 +498,27 @@ def load_benchmark_folder(input_dir: str | Path) -> BenchmarkData:
     for filename, frame in tuple(frames.items()):
         if filename in OPTIONAL_SCHEMAS:
             frames[filename] = _validate_optional_frame(frame, filename)
+
+    result_keys = set(map(tuple, results.loc[:, RESULT_KEY].to_numpy()))
+    for filename in (
+        "search_diagnostics.csv",
+        "cache_diagnostics.csv",
+        "family_budget_diagnostics.csv",
+        "pruning_diagnostics.csv",
+        "beam_diagnostics.csv",
+        "axp_metadata.csv",
+    ):
+        frame = frames.get(filename)
+        if frame is None:
+            continue
+        diagnostic_keys = set(map(tuple, frame.loc[:, RESULT_KEY].to_numpy()))
+        if diagnostic_keys != result_keys:
+            missing = len(result_keys.difference(diagnostic_keys))
+            extra = len(diagnostic_keys.difference(result_keys))
+            raise EvaluationDataError(
+                f"{filename} does not cover full_results.csv "
+                f"({missing} missing keys, {extra} extra keys)"
+            )
 
     missing_optional = tuple(
         filename

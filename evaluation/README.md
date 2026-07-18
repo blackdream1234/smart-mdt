@@ -125,12 +125,16 @@ pdflatex evaluation_report.tex
 
 ## Statistical methods
 
-- Descriptive statistics: mean, median, sample variance, sample standard
-  deviation, range, and Student-t 95% confidence interval.
+- Descriptive statistics: repeated runs and depths are first averaged within
+  each dataset; mean, median, sample variance, sample standard deviation,
+  range, and Student-t 95% confidence intervals are then computed over the
+  independent dataset blocks.
 - Pairwise tests: two-sided paired Wilcoxon signed-rank tests aligned by
-  dataset, run, and depth.
-- Bootstrap: 10,000 paired resamples by default, reporting the observed and
-  bootstrap mean difference plus percentile confidence interval.
+  dataset after averaging repeated runs and depths within each method. Holm's
+  step-down correction controls family-wise error across all configured
+  method-by-metric hypotheses; conclusions use adjusted p-values.
+- Bootstrap: 10,000 paired dataset-block resamples by default, reporting the
+  observed and bootstrap mean difference plus percentile confidence interval.
 - Effect sizes: standard Cliff’s delta and paired Cohen’s d with negligible,
   small, medium, and large magnitude labels.
 - Dataset comparison: deterministic accuracy winner, wins, average ranks, and

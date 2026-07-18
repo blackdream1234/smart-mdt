@@ -15,8 +15,9 @@
 \section{Overview}
 The evaluation contains {{ row_count }} benchmark rows, {{ dataset_count }}
 datasets, and {{ method_count }} methods from
-\path{ {{ input_name }} }. Paired comparisons use dataset, run, and depth
-as their alignment key. Bootstrap intervals use {{ bootstrap_resamples }}
+\path{ {{ input_name }} }. Repeated runs and depths are averaged within each
+dataset, and paired comparisons use datasets as independent blocks. Bootstrap
+intervals use {{ bootstrap_resamples }}
 resamples, seed {{ seed }}, and a {{ confidence_percent }}\% confidence level.
 
 \section{Executive findings}
@@ -40,7 +41,8 @@ resamples, seed {{ seed }}, and a {{ confidence_percent }}\% confidence level.
 \section{Pairwise significance}
 Positive differences and effect sizes indicate that the right-hand method has
 the larger metric value. Accuracy is maximized; nodes, literals, AXp length,
-and runtime are minimized.
+and runtime are minimized. Holm-adjusted p-values control family-wise error
+across the configured tests.
 \input{../tables/significance.tex}
 
 \section{Dataset analysis}
@@ -109,8 +111,9 @@ machine-readable table is available as
 \section{Discussion}
 Predictive performance, compactness, runtime, explanation length, and
 certification are reported separately. Paired Wilcoxon tests preserve the
-dataset/run/depth structure. Bootstrap intervals and effect sizes complement
-p-values with uncertainty and magnitude. The generated reproducibility
-manifest records input hashes, package versions, seeds, and output files.
+dataset blocks after averaging repeated runs and depths. Bootstrap intervals
+and effect sizes complement p-values with uncertainty and magnitude. The
+generated reproducibility manifest records input hashes, package versions,
+seeds, and output files.
 
 \end{document}

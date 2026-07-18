@@ -1,4 +1,5 @@
 use crate::logic::{Backend, LanguageFamily};
+use std::collections::BTreeSet;
 /// Benchmark row with theorem metadata.
 #[derive(Clone, Debug)]
 pub struct ResultRow {
@@ -184,45 +185,91 @@ impl Default for ResultRow {
 /// `EmpiricalAffine`, backend `Affine`) is excluded even though it shares the
 /// `affine` method name.
 pub fn theorem_table_filter(r: &ResultRow) -> bool {
-    if !r.theorem_certified || !r.language_family.theorem_table_allowed() {
+    if !r.theorem_certified
+        || !r.language_family.theorem_table_allowed()
+        || !r.path_certified
+        || r.path_violation_count != 0
+        || r.empirical_fallback_used
+        || r.incompatible_cached_subtree_reused
+        || !r.all_predicates_backend_allowed
+        || !r.theorem_rejection_reason.is_empty()
+        || !path_metadata_is_valid(r)
+    {
         return false;
     }
     match r.method.as_str() {
-        "unary" | "horn" => matches!(r.backend, Backend::StructuralHorn),
-        "antihorn" => matches!(r.backend, Backend::StructuralAntiHorn),
-        "square2cnf" => matches!(r.backend, Backend::TwoSat),
-        "affine" => matches!(r.backend, Backend::Gf2Gaussian),
+        "unary" => {
+            matches!(r.language_family, LanguageFamily::Unary)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted"])
+        }
+        "horn" => {
+            matches!(r.language_family, LanguageFamily::Horn)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted", "horn"])
+        }
+        "antihorn" => {
+            matches!(r.language_family, LanguageFamily::AntiHorn)
+                && matches!(r.backend, Backend::StructuralAntiHorn)
+                && path_states_are_within(r, &["uncommitted", "antihorn"])
+        }
+        "square2cnf" => {
+            matches!(r.language_family, LanguageFamily::Square2Cnf)
+                && matches!(r.backend, Backend::TwoSat)
+                && path_states_are_within(r, &["uncommitted", "two_sat"])
+        }
+        "affine" => {
+            matches!(r.language_family, LanguageFamily::Affine)
+                && matches!(r.backend, Backend::Gf2Gaussian)
+                && path_states_are_within(r, &["uncommitted", "affine_gf2"])
+        }
         "smart_certified" => {
-            r.path_certified
-                && matches!(r.language_family, LanguageFamily::SmartCertified)
+            matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
-                && !r.path_backend.is_empty()
-                && r.path_backend.split('|').all(|backend| {
-                    matches!(
-                        backend,
-                        "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian"
-                    )
-                })
         }
         "cals" | "cals_compact_explain" => {
-            r.path_certified
-                && r.path_violation_count == 0
-                && !r.empirical_fallback_used
-                && !r.incompatible_cached_subtree_reused
-                && r.all_predicates_backend_allowed
-                && r.theorem_rejection_reason.is_empty()
-                && matches!(r.language_family, LanguageFamily::SmartCertified)
+            matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
-                && !r.path_backend.is_empty()
-                && r.path_backend.split('|').all(|backend| {
-                    matches!(
-                        backend,
-                        "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian"
-                    )
-                })
         }
         _ => false,
     }
+}
+
+fn path_states_are_within(r: &ResultRow, allowed: &[&str]) -> bool {
+    r.path_theory_state
+        .split('|')
+        .all(|state| allowed.contains(&state))
+}
+
+fn path_metadata_is_valid(r: &ResultRow) -> bool {
+    let state_parts = r.path_theory_state.split('|').collect::<Vec<_>>();
+    let backend_parts = r.path_backend.split('|').collect::<Vec<_>>();
+    if state_parts.iter().any(|state| state.is_empty())
+        || backend_parts.iter().any(|backend| backend.is_empty())
+        || state_parts.iter().copied().collect::<BTreeSet<_>>().len() != state_parts.len()
+        || backend_parts.iter().copied().collect::<BTreeSet<_>>().len() != backend_parts.len()
+    {
+        return false;
+    }
+
+    let expected_backends = state_parts
+        .iter()
+        .map(|state| match *state {
+            "uncommitted" | "horn" => Some("StructuralHorn"),
+            "antihorn" => Some("StructuralAntiHorn"),
+            "two_sat" => Some("TwoSat"),
+            "affine_gf2" => Some("Gf2Gaussian"),
+            _ => None,
+        })
+        .collect::<Option<BTreeSet<_>>>();
+    let actual_backends = backend_parts
+        .iter()
+        .map(|backend| match *backend {
+            "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian" => Some(*backend),
+            _ => None,
+        })
+        .collect::<Option<BTreeSet<_>>>();
+    expected_backends.is_some() && expected_backends == actual_backends
 }
 
 /// Benchmark warning row.

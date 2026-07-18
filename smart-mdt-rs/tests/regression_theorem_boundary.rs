@@ -23,6 +23,7 @@ fn theorem_table_excludes_forbidden() {
         path_theory_state: "horn".into(),
         path_backend: "StructuralHorn".into(),
         path_certified: true,
+        all_predicates_backend_allowed: true,
         git_sha: "x".into(),
         config: "{}".into(),
         random_state: 1,
@@ -37,6 +38,8 @@ fn theorem_table_excludes_forbidden() {
         method: "affine".into(),
         language_family: LanguageFamily::Affine,
         backend: Backend::Gf2Gaussian,
+        path_theory_state: "affine_gf2".into(),
+        path_backend: "Gf2Gaussian".into(),
         ..good.clone()
     };
     assert!(theorem_table_filter(&certified_affine));

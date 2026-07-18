@@ -271,6 +271,46 @@ fn minority_recall_loss_blocks_pruning() {
 }
 
 #[test]
+fn missing_expected_class_is_insufficient_validation_evidence() {
+    let validation = binary_dataset(20, 0);
+    let original = separating_tree(20);
+    let mut aware = class_aware();
+    aware.minimum_validation_samples = 1;
+    aware.minimum_validation_samples_per_class = 1;
+    let (pruned, diagnostics) = prune_with_validation(
+        &original,
+        &validation,
+        &PruningConfig {
+            enabled: true,
+            accuracy_epsilon: 1.0,
+            class_aware: aware,
+            ..PruningConfig::default()
+        },
+    );
+    assert_eq!(pruned, original);
+    assert_eq!(
+        diagnostics.root_decision_reason,
+        PruningReason::InsufficientValidationSupport
+    );
+    assert_eq!(diagnostics.validation_metrics_before.class_support.len(), 1);
+    assert_eq!(diagnostics.validation_metrics_before.class_support[&0], 20);
+}
+
+#[test]
+fn invalid_pruning_fraction_is_rejected_instead_of_silently_disabling_pruning() {
+    let data = dataset();
+    let config = LearnerConfig {
+        pruning: PruningConfig {
+            enabled: true,
+            validation_fraction: 1.5,
+            ..PruningConfig::default()
+        },
+        ..LearnerConfig::default()
+    };
+    assert!(learn(&data, &config).is_err());
+}
+
+#[test]
 fn disabled_class_aware_mode_reproduces_legacy_pruning() {
     let validation = binary_dataset(20, 20);
     let original = separating_tree(40);

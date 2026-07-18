@@ -38,6 +38,12 @@ def create_benchmark(root: Path, *, optional: bool = True) -> Path:
                         "empirical_fallback_used": False,
                         "incompatible_cached_subtree_reused": False,
                         "all_predicates_backend_allowed": True,
+                        "language_family": "SmartCertified",
+                        "backend": "PathCertified",
+                        "axp_backend": "PathCertified",
+                        "path_certificate": "PathTheory",
+                        "path_theory_state": "uncommitted",
+                        "path_backend": "StructuralHorn",
                         "selected_family_counts": "{'Unary': 2, 'Horn': 1}",
                     }
                 )

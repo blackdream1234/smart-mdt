@@ -162,7 +162,8 @@ pub fn load_dl8_with_metadata(path: impl AsRef<Path>) -> Result<Dl8LoadResult> {
         .iter()
         .flatten()
         .all(|v| *v == 0.0 || *v == 1.0);
-    let feature_equal_to_label_indices = feature_equal_to_label(&processed_rows, &bin_labels_i32);
+    let feature_equal_to_label_indices =
+        feature_equal_to_label(&processed_rows, &raw_labels, &bin_labels_i32);
     let feature_equal_to_label_count = feature_equal_to_label_indices.len();
 
     let mut skipped = false;
@@ -217,19 +218,26 @@ pub fn binarize_labels_python(y: &[i32]) -> Vec<i32> {
         return vec![0; y.len()];
     }
     if labels.len() > 2 {
-        let max_label = y.iter().copied().filter(|v| *v >= 0).max().unwrap_or(0) as usize;
-        let mut counts = vec![0usize; max_label + 1];
+        // Count only observed labels. The Python reference materializes every
+        // index through `max_label`, but unobserved labels have count zero and
+        // cannot win while any non-negative label was observed. A sparse map
+        // therefore has identical results without an allocation proportional
+        // to the largest label value.
+        let mut counts = BTreeMap::<i32, usize>::new();
         for &v in y {
             if v >= 0 {
-                counts[v as usize] += 1;
+                *counts.entry(v).or_default() += 1;
             }
         }
+        // Python's `max(range(...), key=counts.__getitem__)` keeps the first
+        // (lowest) label when multiple classes have the same count. Rust's
+        // `Iterator::max_by_key` keeps the last maximum, so scan the ordered
+        // map for the first maximum to preserve the reference tie break.
+        let maximum_count = counts.values().copied().max().unwrap_or(0);
         let majority = counts
             .iter()
-            .enumerate()
-            .max_by_key(|(_, c)| **c)
-            .map(|(i, _)| i as i32)
-            .unwrap_or(0);
+            .find(|(_, count)| **count == maximum_count)
+            .map_or(0, |(&label, _)| label);
         return y.iter().map(|&v| i32::from(v == majority)).collect();
     }
     let positive_label = labels[1];
@@ -274,15 +282,25 @@ fn non_constant_columns(rows: &[Vec<f64>], eps: f64) -> Vec<usize> {
         .collect()
 }
 
-fn feature_equal_to_label(rows: &[Vec<f64>], y: &[i32]) -> Vec<usize> {
+fn feature_equal_to_label(rows: &[Vec<f64>], raw_y: &[i32], binary_y: &[i32]) -> Vec<usize> {
     let Some(first) = rows.first() else {
         return Vec::new();
     };
     (0..first.len())
         .filter(|&j| {
-            rows.iter()
-                .zip(y)
-                .all(|(r, &label)| r[j] == f64::from(label))
+            let equals_label = rows
+                .iter()
+                .zip(binary_y)
+                .all(|(r, &label)| r[j] == f64::from(label));
+            let equals_complement = rows
+                .iter()
+                .zip(binary_y)
+                .all(|(r, &label)| r[j] == f64::from(1 - label));
+            let equals_raw_label = rows
+                .iter()
+                .zip(raw_y)
+                .all(|(r, &label)| r[j] == f64::from(label));
+            equals_label || equals_complement || equals_raw_label
         })
         .collect()
 }

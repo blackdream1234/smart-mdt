@@ -46,14 +46,34 @@ impl CertificateMetadata {
         backend: Backend,
         path_certificate: PathCertificate,
     ) -> Self {
-        let theorem_certified = language_family.theorem_table_allowed()
+        // A certificate is meaningful only for the matching
+        // language/backend/path-certificate triple. Merely combining three
+        // individually allowed enum values must not manufacture a theorem
+        // claim.
+        let theorem_certified = theorem_mode
             && matches!(
-                backend,
-                Backend::StructuralHorn
-                    | Backend::StructuralAntiHorn
-                    | Backend::TwoSat
-                    | Backend::Gf2Gaussian
-                    | Backend::PathCertified
+                (language_family, backend, path_certificate),
+                (
+                    LanguageFamily::Unary | LanguageFamily::Horn,
+                    Backend::StructuralHorn,
+                    PathCertificate::HornCnf
+                ) | (
+                    LanguageFamily::AntiHorn,
+                    Backend::StructuralAntiHorn,
+                    PathCertificate::AntiHornCnf
+                ) | (
+                    LanguageFamily::Square2Cnf,
+                    Backend::TwoSat,
+                    PathCertificate::TwoCnf
+                ) | (
+                    LanguageFamily::Affine,
+                    Backend::Gf2Gaussian,
+                    PathCertificate::AffineGf2
+                ) | (
+                    LanguageFamily::SmartCertified,
+                    Backend::PathCertified,
+                    PathCertificate::PathTheory
+                )
             );
         Self {
             theorem_mode,

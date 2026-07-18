@@ -34,13 +34,24 @@ def descriptive_statistics(
     results: pd.DataFrame,
     confidence_level: float = 0.95,
 ) -> pd.DataFrame:
-    """Compute publication-ready descriptive statistics by method and metric."""
+    """Compute descriptive statistics over independent dataset blocks.
+
+    Runs and depths are repeated observations of the same benchmark dataset,
+    not independent experimental units.  Average them within each
+    ``(dataset, method)`` block before estimating dispersion or confidence
+    intervals so datasets receive equal weight and the reported sample size is
+    the number of independent datasets.
+    """
 
     records: list[dict[str, object]] = []
     for method in ordered_methods(results["method"].unique()):
         method_rows = results.loc[results["method"] == method]
         for metric in METRICS:
-            values = method_rows[metric.column].to_numpy(dtype=float)
+            values = (
+                method_rows.groupby("dataset", sort=True)[metric.column]
+                .mean()
+                .to_numpy(dtype=float)
+            )
             lower, upper = mean_confidence_interval(values, confidence_level)
             records.append(
                 {

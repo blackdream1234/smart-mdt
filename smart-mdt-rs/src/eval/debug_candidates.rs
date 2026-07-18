@@ -58,6 +58,20 @@ struct CandidateDiagnostic {
 
 /// Runs root candidate diagnostics and writes `debug_candidates.csv` plus masks for top 5.
 pub fn run_debug_candidates(cfg: &DebugCandidateConfig) -> Result<Vec<String>> {
+    if cfg.depth != 0 || cfg.node_path != "root" {
+        return Err(SmartMdtError::InvalidInput(
+            "debug-candidates currently supports only --depth 0 --node-path root".into(),
+        ));
+    }
+    if !matches!(
+        cfg.method.as_str(),
+        "unary" | "horn" | "antihorn" | "square2cnf" | "affine" | "smart_certified"
+    ) {
+        return Err(SmartMdtError::InvalidInput(format!(
+            "unknown certified method {}",
+            cfg.method
+        )));
+    }
     fs::create_dir_all(&cfg.output)?;
     let path = find_dataset_path(&cfg.data_dir, &cfg.dataset)?;
     let loaded = load_dl8_with_metadata(&path)?;
@@ -449,7 +463,7 @@ fn affine_rhs_str(p: &Predicate) -> String {
     }
 }
 fn csv(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "'"))
+    format!("\"{}\"", s.replace('"', "\"\""))
 }
 fn usize_counts(xs: &[usize]) -> String {
     xs.iter()

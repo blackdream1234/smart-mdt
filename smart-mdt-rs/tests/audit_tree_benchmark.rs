@@ -71,6 +71,7 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         path_theory_state: "uncommitted".into(),
         path_backend: "StructuralHorn".into(),
         path_certified: true,
+        all_predicates_backend_allowed: true,
         git_sha: "abc".into(),
         config: "seed=1".into(),
         random_state: 1,
@@ -86,6 +87,26 @@ fn theorem_filter_requires_allowed_backend_and_method() {
     assert!(!theorem_table_filter(&ResultRow {
         language_family: LanguageFamily::EmpiricalMixed,
         backend: Backend::EmpiricalMixed,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        language_family: LanguageFamily::Horn,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_certified: false,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_theory_state: "horn".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_backend: "TwoSat".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        all_predicates_backend_allowed: false,
         ..base.clone()
     }));
     assert!(!theorem_table_filter(&ResultRow {
@@ -106,6 +127,7 @@ fn cals_theorem_filter_requires_the_complete_audit_boundary() {
         language_family: LanguageFamily::SmartCertified,
         backend: Backend::PathCertified,
         path_certified: true,
+        path_theory_state: "horn|affine_gf2".into(),
         path_backend: "StructuralHorn|Gf2Gaussian".into(),
         all_predicates_backend_allowed: true,
         ..ResultRow::default()

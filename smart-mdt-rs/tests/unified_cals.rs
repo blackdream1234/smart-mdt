@@ -191,5 +191,6 @@ fn cli_accepts_cals_method_and_required_flags() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Internal"));
+    let tree_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(tree_json["node"], "internal");
 }

@@ -23,6 +23,18 @@ fn literal(feature: u32, positive: bool) -> Literal {
     }
 }
 
+fn boolean_literal(feature: u32) -> Literal {
+    Literal {
+        atom: ThresholdAtom {
+            feature,
+            threshold_id: 0,
+            threshold: 0.5,
+            op: ThresholdOp::GreaterEqual,
+        },
+        positive: true,
+    }
+}
+
 fn dataset() -> Dataset {
     let rows = (0..16)
         .map(|mask| {
@@ -82,7 +94,7 @@ fn verified_json_round_trip_preserves_thresholds_and_axp_scope() {
 fn affine_parity_wording_is_explicit_and_certified() {
     let explanation = compile_verified_explanation(
         &stump(Predicate::Affine {
-            literals: vec![literal(0, true), literal(1, true)],
+            literals: vec![boolean_literal(0), boolean_literal(1)],
             rhs: true,
         }),
         &dataset(),

@@ -17,7 +17,45 @@ from .effect_size import (
 from .utils import method_label, stable_seed
 
 
-PAIR_KEYS = ["dataset", "run", "depth"]
+PAIR_KEYS = ["dataset"]
+REPEATED_OBSERVATION_KEYS = ["dataset", "run", "depth"]
+SIGNIFICANCE_COLUMNS = (
+    "comparison",
+    "left_method",
+    "right_method",
+    "metric",
+    "metric_label",
+    "pairs",
+    "left_mean",
+    "right_mean",
+    "mean_difference_right_minus_left",
+    "wilcoxon_statistic",
+    "p_value",
+    "bootstrap_mean",
+    "bootstrap_ci_lower",
+    "bootstrap_ci_upper",
+    "bootstrap_resamples",
+    "bootstrap_seed",
+    "cliffs_delta_right_vs_left",
+    "cliffs_interpretation",
+    "cohens_d_paired",
+    "cohens_interpretation",
+    "p_value_adjusted_holm",
+    "significant_holm_0_05",
+)
+
+
+def _holm_adjust(p_values: np.ndarray) -> np.ndarray:
+    """Holm step-down family-wise error correction."""
+
+    order = np.argsort(p_values, kind="stable")
+    adjusted = np.empty_like(p_values, dtype=float)
+    running = 0.0
+    hypotheses = p_values.size
+    for rank, index in enumerate(order):
+        running = max(running, (hypotheses - rank) * float(p_values[index]))
+        adjusted[index] = min(1.0, running)
+    return adjusted
 
 
 def paired_metric_values(
@@ -26,21 +64,38 @@ def paired_metric_values(
     right_method: str,
     metric: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Align two methods by dataset, run, and depth."""
+    """Align two methods after averaging repetitions within each dataset.
+
+    Runs and depths share a dataset and therefore cannot be treated as
+    independent Wilcoxon/bootstrap pairs.  Dataset-level means are the
+    independent blocks used for inference.
+    """
 
     subset = results.loc[
         results["method"].isin((left_method, right_method)),
-        [*PAIR_KEYS, "method", metric],
+        [*REPEATED_OBSERVATION_KEYS, "method", metric],
     ]
-    pivot = subset.pivot(index=PAIR_KEYS, columns="method", values=metric)
-    if left_method not in pivot or right_method not in pivot:
+    repeated = subset.pivot(
+        index=REPEATED_OBSERVATION_KEYS,
+        columns="method",
+        values=metric,
+    )
+    if left_method not in repeated or right_method not in repeated:
         raise ValueError(f"cannot pair {left_method} and {right_method} for {metric}")
-    if pivot[[left_method, right_method]].isna().any().any():
-        missing = int(pivot[[left_method, right_method]].isna().any(axis=1).sum())
-        raise ValueError(
-            f"{left_method} vs {right_method} has {missing} incomplete pairs for {metric}"
+    if repeated[[left_method, right_method]].isna().any().any():
+        missing = int(
+            repeated[[left_method, right_method]].isna().any(axis=1).sum()
         )
-    pivot = pivot.sort_index()
+        raise ValueError(
+            f"{left_method} vs {right_method} has {missing} incomplete repeated "
+            f"observations for {metric}"
+        )
+    pivot = (
+        repeated[[left_method, right_method]]
+        .groupby(level=PAIR_KEYS, sort=True)
+        .mean()
+        .sort_index()
+    )
     return (
         pivot[left_method].to_numpy(dtype=float),
         pivot[right_method].to_numpy(dtype=float),
@@ -115,4 +170,13 @@ def pairwise_significance(
                     "cohens_interpretation": interpret_cohens_d(cohen),
                 }
             )
-    return pd.DataFrame.from_records(records)
+    frame = pd.DataFrame.from_records(
+        records, columns=SIGNIFICANCE_COLUMNS[:-2]
+    )
+    if frame.empty:
+        return frame.reindex(columns=SIGNIFICANCE_COLUMNS)
+    frame["p_value_adjusted_holm"] = _holm_adjust(
+        frame["p_value"].to_numpy(dtype=float)
+    )
+    frame["significant_holm_0_05"] = frame["p_value_adjusted_holm"] < 0.05
+    return frame.reindex(columns=SIGNIFICANCE_COLUMNS)

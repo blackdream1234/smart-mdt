@@ -19,6 +19,7 @@ Input: `{{ input_name }}` ({{ row_count }} rows, {{ dataset_count }} datasets).
 
 {{ certification_sentence }}
 
-Statistical tests are paired by dataset, run, and depth. Confidence intervals
-use {{ bootstrap_resamples }} deterministic bootstrap resamples with seed
+Repeated runs and depths are averaged within each dataset. Statistical tests
+are paired over independent dataset blocks, and confidence intervals use
+{{ bootstrap_resamples }} deterministic dataset-block bootstrap resamples with seed
 {{ seed }}.

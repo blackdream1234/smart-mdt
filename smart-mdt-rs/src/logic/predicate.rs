@@ -1,5 +1,6 @@
 use super::{Backend, CertificateMetadata, LanguageFamily, Literal, PathCertificate};
 use crate::{data::ColumnMajorMatrix, FeatureId};
+use std::collections::BTreeMap;
 /// Split predicate with certificate-first metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Predicate {
@@ -24,6 +25,34 @@ pub enum Predicate {
     },
 }
 impl Predicate {
+    /// Whether the variant's contents satisfy the syntactic assumptions of
+    /// its advertised certified backend.
+    pub(crate) fn certificate_shape_is_valid(&self) -> bool {
+        match self {
+            Self::Unary(_) | Self::Square2Cnf { .. } => true,
+            Self::HornClause(literals) => normalized_boolean_clause_polarities(literals)
+                .is_none_or(|polarities| {
+                    polarities.into_iter().filter(|positive| *positive).count() <= 1
+                }),
+            Self::AntiHornClause(literals) => normalized_boolean_clause_polarities(literals)
+                .is_none_or(|polarities| {
+                    polarities.into_iter().filter(|positive| !*positive).count() <= 1
+                }),
+            Self::Affine { literals, .. } => {
+                literals.len() <= 128
+                    && literals.iter().all(|literal| {
+                        literal.positive
+                            && literal.atom.op == super::ThresholdOp::GreaterEqual
+                            && literal.atom.threshold == 0.5
+                    })
+                    && literals
+                        .windows(2)
+                        .all(|pair| pair[0].atom.feature < pair[1].atom.feature)
+            }
+            Self::EmpiricalAffine { .. } => false,
+        }
+    }
+
     /// Evaluates predicate on a row.
     pub fn eval(&self, x: &ColumnMajorMatrix, row: usize) -> bool {
         match self {
@@ -72,6 +101,13 @@ impl Predicate {
     }
     /// Certificate metadata.
     pub fn certificate(&self, theorem_mode: bool) -> CertificateMetadata {
+        if !self.certificate_shape_is_valid() && !matches!(self, Self::EmpiricalAffine { .. }) {
+            return CertificateMetadata::rejected(
+                theorem_mode,
+                self.language(),
+                "predicate does not satisfy its advertised certificate shape",
+            );
+        }
         let pc = match self.backend() {
             Backend::StructuralHorn => PathCertificate::HornCnf,
             Backend::StructuralAntiHorn => PathCertificate::AntiHornCnf,
@@ -128,4 +164,29 @@ impl Predicate {
             _ => None,
         }
     }
+}
+
+/// Effective propositional polarities after evaluating threshold literals on
+/// the certified Boolean domain. `None` denotes a tautological clause.
+fn normalized_boolean_clause_polarities(literals: &[Literal]) -> Option<Vec<bool>> {
+    let mut normalized = BTreeMap::<FeatureId, bool>::new();
+    for literal in literals {
+        let at_zero = literal.eval_value(0.0);
+        let at_one = literal.eval_value(1.0);
+        match (at_zero, at_one) {
+            (true, true) => return None,
+            (false, false) => {}
+            (false, true) | (true, false) => {
+                let positive = at_one;
+                if normalized
+                    .get(&literal.atom.feature)
+                    .is_some_and(|existing| *existing != positive)
+                {
+                    return None;
+                }
+                normalized.insert(literal.atom.feature, positive);
+            }
+        }
+    }
+    Some(normalized.into_values().collect())
 }

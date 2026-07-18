@@ -1,7 +1,8 @@
 use smart_mdt_rs::{
     data::{ColumnMajorMatrix, Dataset},
     explain::extract_final_tree_axps,
-    tree::{learn_with_diagnostics, LanguagePolicy, LearnerConfig, PruningConfig},
+    logic::{Literal, Predicate, ThresholdAtom, ThresholdOp},
+    tree::{learn_with_diagnostics, LanguagePolicy, LearnerConfig, PruningConfig, TreeNode},
 };
 
 fn dataset() -> Dataset {
@@ -17,6 +18,41 @@ fn dataset() -> Dataset {
         .map(|row| u32::from(row[0] == 1.0 || row[1] == 1.0))
         .collect();
     Dataset::new(ColumnMajorMatrix::from_rows(&rows).unwrap(), labels).unwrap()
+}
+
+fn ge(feature: u32) -> Literal {
+    Literal {
+        atom: ThresholdAtom {
+            feature,
+            threshold_id: 0,
+            threshold: 0.5,
+            op: ThresholdOp::GreaterEqual,
+        },
+        positive: true,
+    }
+}
+
+fn and_tree() -> TreeNode {
+    TreeNode::Internal {
+        predicate: Predicate::Unary(ge(0)),
+        majority_class: 0,
+        left: Box::new(TreeNode::Internal {
+            predicate: Predicate::Unary(ge(1)),
+            majority_class: 0,
+            left: Box::new(TreeNode::Leaf {
+                class: 1,
+                samples: 1,
+            }),
+            right: Box::new(TreeNode::Leaf {
+                class: 0,
+                samples: 1,
+            }),
+        }),
+        right: Box::new(TreeNode::Leaf {
+            class: 0,
+            samples: 8,
+        }),
+    }
 }
 
 #[test]
@@ -53,4 +89,20 @@ fn default_workflow_extracts_axps_only_after_final_tree_selection() {
             .map(|result| (&result.features, &result.metadata))
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn dataset_axp_metric_includes_rows_after_the_eighth_prefix() {
+    let mut rows = vec![vec![0.0, 0.0]; 8];
+    rows.push(vec![1.0, 1.0]);
+    let features = ColumnMajorMatrix::from_rows(&rows).unwrap();
+    let prefix = extract_final_tree_axps(&and_tree(), &features, 8, true);
+    let complete = extract_final_tree_axps(&and_tree(), &features, features.rows(), true);
+    assert_eq!(prefix.results.len(), 8);
+    assert_eq!(prefix.mean_length, 1.0);
+    assert_eq!(prefix.max_length, 1);
+    assert_eq!(complete.results.len(), 9);
+    assert_eq!(complete.mean_length, 10.0 / 9.0);
+    assert_eq!(complete.max_length, 2);
+    assert!(complete.theorem_certified);
 }

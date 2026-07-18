@@ -92,6 +92,7 @@ def _significance_display(frame: pd.DataFrame) -> pd.DataFrame:
         "pairs",
         "mean_difference_right_minus_left",
         "p_value",
+        "p_value_adjusted_holm",
         "bootstrap_ci_lower",
         "bootstrap_ci_upper",
         "cliffs_delta_right_vs_left",
@@ -107,6 +108,7 @@ def _significance_display(frame: pd.DataFrame) -> pd.DataFrame:
             "pairs": "Pairs",
             "mean_difference_right_minus_left": "Mean diff.",
             "p_value": "p-value",
+            "p_value_adjusted_holm": "Holm p-value",
             "bootstrap_ci_lower": "CI lower",
             "bootstrap_ci_upper": "CI upper",
             "cliffs_delta_right_vs_left": "Cliff's delta",
@@ -119,13 +121,14 @@ def _significance_display(frame: pd.DataFrame) -> pd.DataFrame:
 
 def _significant_conclusions(frame: pd.DataFrame) -> list[str]:
     if frame.empty:
-        return ["No configured paired comparison reached p < 0.05."]
-    significant = frame.loc[frame["p_value"] < 0.05].copy()
+        return ["No configured paired comparison reached Holm-adjusted p < 0.05."]
+    significant = frame.loc[frame["p_value_adjusted_holm"] < 0.05].copy()
     if significant.empty:
-        return ["No configured paired comparison reached p < 0.05."]
+        return ["No configured paired comparison reached Holm-adjusted p < 0.05."]
     significant["_accuracy_first"] = (significant["metric"] != "accuracy").astype(int)
     significant = significant.sort_values(
-        ["_accuracy_first", "p_value", "comparison", "metric"], kind="mergesort"
+        ["_accuracy_first", "p_value_adjusted_holm", "comparison", "metric"],
+        kind="mergesort",
     )
     conclusions: list[str] = []
     for _, row in significant.head(6).iterrows():
@@ -135,22 +138,41 @@ def _significant_conclusions(frame: pd.DataFrame) -> list[str]:
             f"For {row['comparison']} on {row['metric_label']}, the right-hand "
             f"method was {direction} by {abs(difference):.4f} "
             f"(95% bootstrap CI [{row['bootstrap_ci_lower']:.4f}, "
-            f"{row['bootstrap_ci_upper']:.4f}], p={row['p_value']:.4g}, "
+            f"{row['bootstrap_ci_upper']:.4f}], raw p={row['p_value']:.4g}, "
+            f"Holm-adjusted p={row['p_value_adjusted_holm']:.4g}, "
             f"Cliff magnitude {row['cliffs_interpretation']})."
         )
     return conclusions
 
 
 def _certification_sentence(certification: pd.DataFrame) -> str:
-    counts = certification.set_index("audit_item")["count"].to_dict()
-    return (
-        f"{int(counts.get('theorem_certified_rows', 0))} rows are theorem-certified; "
-        f"the audit found {int(counts.get('empirical_rows', 0))} empirical rows, "
-        f"{int(counts.get('forbidden_predicates', 0))} forbidden predicates, "
-        f"{int(counts.get('feature_label_leakage', 0))} feature-label leakage "
-        f"findings, {int(counts.get('path_violations', 0))} path violations, and "
-        f"{int(counts.get('empirical_fallbacks', 0))} empirical fallbacks."
+    indexed = certification.set_index("audit_item")
+
+    def finding(item: str, label: str) -> str:
+        if item not in indexed.index:
+            return f"unverified {label}"
+        row = indexed.loc[item]
+        if "evidence_available" in indexed and not bool(row["evidence_available"]):
+            return f"unverified {label}"
+        return f"{int(row['count'])} {label}"
+
+    sentence = (
+        f"The audit found {finding('theorem_certified_rows', 'theorem-certified rows')}, "
+        f"{finding('empirical_rows', 'empirical rows')}, "
+        f"{finding('forbidden_predicates', 'forbidden predicates')}, "
+        f"{finding('feature_label_leakage', 'feature-label leakage findings')}, "
+        f"{finding('path_violations', 'path violations')}, and "
+        f"{finding('empirical_fallbacks', 'empirical fallbacks')}."
     )
+    if "evidence_available" in indexed:
+        unavailable = [
+            str(item).replace("_", " ")
+            for item, available in indexed["evidence_available"].items()
+            if not bool(available)
+        ]
+        if unavailable:
+            sentence += " Evidence was unavailable for: " + ", ".join(unavailable) + "."
+    return sentence
 
 
 def _render_reports(
@@ -259,15 +281,19 @@ def build_report(config: EvaluationConfig) -> EvaluationArtifacts:
         pruning=pruning_frame,
     )
 
-    means = data.results.groupby("method", sort=True)[
-        [
-            "accuracy",
-            "tree_nodes",
-            "predicate_literals",
-            "mean_axp_length",
-            "fit_time_seconds",
-        ]
-    ].mean()
+    report_metrics = [
+        "accuracy",
+        "tree_nodes",
+        "predicate_literals",
+        "mean_axp_length",
+        "fit_time_seconds",
+    ]
+    means = (
+        data.results.groupby(["dataset", "method"], sort=True)[report_metrics]
+        .mean()
+        .groupby("method", sort=True)
+        .mean()
+    )
     best_accuracy = _best_method(means, "accuracy", higher_is_better=True)
     smallest_tree = _best_method(means, "tree_nodes", higher_is_better=False)
     fastest_runtime = _best_method(

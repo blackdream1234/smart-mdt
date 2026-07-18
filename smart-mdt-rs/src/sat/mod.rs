@@ -16,8 +16,18 @@ pub type SatLit = i32;
 pub type Clause = Vec<SatLit>;
 /// CNF formula.
 pub type Cnf = Vec<Clause>;
+
+pub(crate) fn literals_are_in_range(num_vars: usize, cnf: &Cnf) -> bool {
+    cnf.iter().flatten().all(|literal| {
+        *literal != 0 && *literal != i32::MIN && (literal.unsigned_abs() as usize) <= num_vars
+    })
+}
+
 /// Brute-force SAT for tests and tiny fallbacks outside theorem claims.
 pub fn brute_force_sat(n: usize, cnf: &Cnf) -> bool {
+    if n >= usize::BITS as usize || !literals_are_in_range(n, cnf) {
+        return false;
+    }
     (0..(1usize << n)).any(|m| {
         cnf.iter().all(|cl| {
             cl.iter().any(|&l| {

@@ -87,6 +87,22 @@ fn beam_respects_depth_node_and_expansion_budgets() {
 }
 
 #[test]
+fn greedy_respects_a_finite_total_node_budget() {
+    let data = dataset();
+    let mut cfg = config(TreeSearchStrategy::Greedy);
+    cfg.tree_search.node_budget = 1;
+    let tree = learn(&data, &cfg).unwrap();
+    assert_eq!(tree.nodes(), 1);
+
+    cfg.tree_search.node_budget = 5;
+    let tree = learn(&data, &cfg).unwrap();
+    assert!(tree.nodes() <= 5);
+
+    cfg.tree_search.node_budget = 0;
+    assert!(learn(&data, &cfg).is_err());
+}
+
+#[test]
 fn timeout_and_sparse_lookahead_return_complete_certified_trees() {
     let data = dataset();
     let mut timeout = config(TreeSearchStrategy::GlobalBeam);
