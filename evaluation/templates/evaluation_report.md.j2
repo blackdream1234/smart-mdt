@@ -1,0 +1,125 @@
+# Smart-MDT reproducible evaluation report
+
+## Overview
+
+- Input benchmark: `{{ input_name }}`
+- Benchmark rows: {{ row_count }}
+- Datasets: {{ dataset_count }}
+- Methods: {{ method_count }}
+- Bootstrap resamples: {{ bootstrap_resamples }}
+- Bootstrap seed: {{ seed }}
+- Confidence level: {{ confidence_percent }}%
+- Missing optional inputs: {{ missing_optional }}
+
+The framework validates the benchmark schema before analysis and pairs methods
+by dataset, run, and depth for every significance test.
+
+## Executive findings
+
+- Best mean accuracy: **{{ best_accuracy.method_label }}**
+  ({{ "%.6f"|format(best_accuracy.value) }})
+- Smallest mean tree: **{{ smallest_tree.method_label }}**
+  ({{ "%.3f"|format(smallest_tree.value) }} nodes)
+- Fastest mean fit time: **{{ fastest_runtime.method_label }}**
+  ({{ "%.3f"|format(fastest_runtime.value) }} seconds)
+- Best mean AXp length: **{{ best_axp.method_label }}**
+  ({{ "%.3f"|format(best_axp.value) }})
+
+{% for conclusion in key_conclusions %}
+- {{ conclusion }}
+{% endfor %}
+
+## Descriptive statistics
+
+{{ statistics_markdown }}
+
+## Pairwise significance
+
+Positive differences and effect sizes mean the right-hand method has the larger
+metric value. Whether that is preferable depends on the metric: accuracy is
+maximized, whereas nodes, literals, AXp length, and runtime are minimized.
+
+{{ significance_markdown }}
+
+## Dataset analysis
+
+The accuracy-rank Nemenyi critical difference is
+{{ "%.3f"|format(critical_difference) }} across {{ dataset_count }} datasets.
+
+{{ ranks_markdown }}
+
+The complete per-dataset table is available in
+[`dataset_summary.csv`](../tables/dataset_summary.csv).
+
+![Dataset wins](../figures/dataset_win_histogram.png)
+
+![Average accuracy rank](../figures/average_rank.png)
+
+## Accuracy, complexity, explanation, and runtime figures
+
+![Accuracy boxplot](../figures/accuracy_boxplot.png)
+
+![Accuracy violin plot](../figures/accuracy_violin.png)
+
+![Accuracy-complexity Pareto frontier](../figures/pareto.png)
+
+![Accuracy versus nodes](../figures/accuracy_vs_nodes.png)
+
+![Accuracy versus runtime](../figures/accuracy_vs_runtime.png)
+
+![Accuracy versus AXp](../figures/accuracy_vs_axp.png)
+
+![Runtime boxplot](../figures/runtime_boxplot.png)
+
+![Runtime log-scale boxplot](../figures/runtime_log_boxplot.png)
+
+![Tree nodes](../figures/nodes_boxplot.png)
+
+![AXp length](../figures/axp_boxplot.png)
+
+![Predicate literals](../figures/predicate_literals_boxplot.png)
+
+## Certification
+
+{{ certification_markdown }}
+
+![Certification overview](../figures/certification_overview.png)
+
+## Benchmark warnings
+
+The warning summary contains {{ warning_group_count }} grouped records.
+
+{{ warnings_markdown }}
+
+![Warning distribution](../figures/warning_distribution.png)
+
+## Search analysis
+
+{{ search_markdown }}
+
+![Search diagnostics](../figures/search_diagnostics.png)
+
+## Pruning analysis
+
+{{ pruning_markdown }}
+
+![Pruning diagnostics](../figures/pruning_diagnostics.png)
+
+## AXp analysis
+
+{{ axp_markdown }}
+
+## Discussion
+
+The results should be interpreted jointly: predictive performance alone does
+not establish compactness, speed, explanation quality, or certification.
+Paired tests preserve the dataset/run/depth structure, while bootstrap
+intervals quantify uncertainty in mean paired differences. Effect-size
+magnitudes supplement p-values and should be considered alongside practical
+importance.
+
+This report is deterministic for a fixed input folder and configuration.
+The reproducibility manifest records input hashes, dependency versions, seeds,
+and generated artifacts. Bootstrap intervals are reproducible because every
+comparison and metric receives a stable seed derived from the configured base
+seed.

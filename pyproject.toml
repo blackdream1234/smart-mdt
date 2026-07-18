@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-mdt-evaluation"
+version = "1.0.0"
+description = "Deterministic research evaluation framework for Smart-MDT"
+readme = "evaluation/README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["evaluation", "evaluation.*"]
+
+[tool.setuptools.package-data]
+evaluation = ["templates/*.j2"]
+
+[tool.pytest.ini_options]
+testpaths = ["evaluation/tests"]

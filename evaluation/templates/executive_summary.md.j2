@@ -1,0 +1,24 @@
+# Smart-MDT executive evaluation summary
+
+Input: `{{ input_name }}` ({{ row_count }} rows, {{ dataset_count }} datasets).
+
+| Objective | Best method | Result |
+| --- | --- | ---: |
+| Accuracy | {{ best_accuracy.method_label }} | {{ "%.6f"|format(best_accuracy.value) }} |
+| Smallest tree | {{ smallest_tree.method_label }} | {{ "%.3f"|format(smallest_tree.value) }} nodes |
+| Fastest runtime | {{ fastest_runtime.method_label }} | {{ "%.3f"|format(fastest_runtime.value) }} s |
+| Shortest AXp | {{ best_axp.method_label }} | {{ "%.3f"|format(best_axp.value) }} |
+
+## Key statistical conclusions
+
+{% for conclusion in key_conclusions %}
+- {{ conclusion }}
+{% endfor %}
+
+## Certification
+
+{{ certification_sentence }}
+
+Statistical tests are paired by dataset, run, and depth. Confidence intervals
+use {{ bootstrap_resamples }} deterministic bootstrap resamples with seed
+{{ seed }}.

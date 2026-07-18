@@ -1,0 +1,40 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=1.6cm]{geometry}
+\usepackage{booktabs}
+\pagestyle{empty}
+\begin{document}
+\section*{Smart-MDT Executive Evaluation Summary}
+\textbf{Input:} {{ input_name_tex }} ({{ row_count }} rows,
+{{ dataset_count }} datasets).
+
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+Objective & Best method & Result \\
+\midrule
+Accuracy & {{ best_accuracy.method_label_tex }} &
+{{ "%.6f"|format(best_accuracy.value) }} \\
+Smallest tree & {{ smallest_tree.method_label_tex }} &
+{{ "%.3f"|format(smallest_tree.value) }} nodes \\
+Fastest runtime & {{ fastest_runtime.method_label_tex }} &
+{{ "%.3f"|format(fastest_runtime.value) }} s \\
+Shortest AXp & {{ best_axp.method_label_tex }} &
+{{ "%.3f"|format(best_axp.value) }} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Key statistical conclusions}
+\begin{itemize}
+{% for conclusion in key_conclusions_tex %}
+\item {{ conclusion }}
+{% endfor %}
+\end{itemize}
+
+\subsection*{Certification}
+{{ certification_sentence_tex }}
+
+Tests are paired by dataset, run, and depth. Confidence intervals use
+{{ bootstrap_resamples }} deterministic bootstrap resamples with seed
+{{ seed }}.
+\end{document}

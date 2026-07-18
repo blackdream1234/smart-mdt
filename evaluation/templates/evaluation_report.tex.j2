@@ -1,0 +1,116 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\title{Smart-MDT Reproducible Research Evaluation}
+\author{Automatically generated evaluation framework}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+The evaluation contains {{ row_count }} benchmark rows, {{ dataset_count }}
+datasets, and {{ method_count }} methods from
+\path{ {{ input_name }} }. Paired comparisons use dataset, run, and depth
+as their alignment key. Bootstrap intervals use {{ bootstrap_resamples }}
+resamples, seed {{ seed }}, and a {{ confidence_percent }}\% confidence level.
+
+\section{Executive findings}
+\begin{itemize}
+  \item Best mean accuracy: {{ best_accuracy.method_label_tex }}
+        ({{ "%.6f"|format(best_accuracy.value) }}).
+  \item Smallest mean tree: {{ smallest_tree.method_label_tex }}
+        ({{ "%.3f"|format(smallest_tree.value) }} nodes).
+  \item Fastest mean fit time: {{ fastest_runtime.method_label_tex }}
+        ({{ "%.3f"|format(fastest_runtime.value) }} seconds).
+  \item Best mean AXp length: {{ best_axp.method_label_tex }}
+        ({{ "%.3f"|format(best_axp.value) }}).
+{% for conclusion in key_conclusions_tex %}
+  \item {{ conclusion }}
+{% endfor %}
+\end{itemize}
+
+\section{Descriptive statistics}
+\input{../tables/statistics.tex}
+
+\section{Pairwise significance}
+Positive differences and effect sizes indicate that the right-hand method has
+the larger metric value. Accuracy is maximized; nodes, literals, AXp length,
+and runtime are minimized.
+\input{../tables/significance.tex}
+
+\section{Dataset analysis}
+The Nemenyi critical difference for average accuracy ranks is
+{{ "%.3f"|format(critical_difference) }}.
+\input{../tables/dataset_summary.tex}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{../figures/dataset_win_histogram.pdf}
+\caption{Dataset winner counts.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{../figures/average_rank.pdf}
+\caption{Average dataset accuracy ranks.}
+\end{figure}
+
+\section{Performance and explanation figures}
+{% for figure in main_figures %}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/{{ figure.name }}.pdf}
+\caption{ {{ figure.caption_tex }} }
+\end{figure}
+{% endfor %}
+
+\section{Certification}
+\input{../tables/certification_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/certification_overview.pdf}
+\caption{Certification and integrity audit.}
+\end{figure}
+
+\section{Benchmark warnings}
+The warning summary contains {{ warning_group_count }} grouped records. The
+machine-readable table is available as
+\texttt{../tables/warnings\_summary.csv}.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/warning_distribution.pdf}
+\caption{Benchmark warning distribution.}
+\end{figure}
+
+\section{Search analysis}
+\input{../tables/search_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/search_diagnostics.pdf}
+\caption{Greedy and selective-lookahead node selections.}
+\end{figure}
+
+\section{Pruning analysis}
+\input{../tables/pruning_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/pruning_diagnostics.pdf}
+\caption{Validation balanced accuracy before and after pruning.}
+\end{figure}
+
+\section{AXp analysis}
+\input{../tables/axp_summary.tex}
+
+\section{Discussion}
+Predictive performance, compactness, runtime, explanation length, and
+certification are reported separately. Paired Wilcoxon tests preserve the
+dataset/run/depth structure. Bootstrap intervals and effect sizes complement
+p-values with uncertainty and magnitude. The generated reproducibility
+manifest records input hashes, package versions, seeds, and output files.
+
+\end{document}
