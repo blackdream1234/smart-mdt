@@ -5,9 +5,12 @@ use smart_mdt_rs::{
     },
     logic::{Backend, LanguageFamily, Literal, Predicate, ThresholdAtom, ThresholdOp},
     search::affine::{generate_affine_with_diagnostics, AffineConfig},
-    tree::{learn, predict_all, tree_is_certified, LanguagePolicy, LearnerConfig, TreeNode},
+    tree::{
+        learn, predict_all, tree_is_certified, LanguagePolicy, LearnerConfig, TrainingContext,
+        TreeNode,
+    },
 };
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, sync::Arc};
 
 fn bool_lit(feature: u32) -> Literal {
     Literal {
@@ -26,6 +29,55 @@ fn boolean_rows(features: usize) -> ColumnMajorMatrix {
         .map(|m| (0..features).map(|j| ((m >> j) & 1) as f64).collect())
         .collect();
     ColumnMajorMatrix::from_rows(&rows).unwrap()
+}
+
+fn assert_canonical_affine_candidates(
+    candidates: &[smart_mdt_rs::search::SplitCandidate],
+    source: &str,
+) {
+    assert!(!candidates.is_empty(), "{source} produced no candidates");
+    for candidate in candidates {
+        let Predicate::Affine { literals, .. } = &candidate.predicate else {
+            panic!("{source} produced a non-Affine predicate");
+        };
+        assert!(
+            literals
+                .windows(2)
+                .all(|pair| pair[0].atom.feature < pair[1].atom.feature),
+            "{source} produced non-canonical literals: {literals:?}"
+        );
+        assert!(
+            candidate.predicate.certificate(true).theorem_certified,
+            "{source} produced an uncertified Affine candidate"
+        );
+    }
+}
+
+#[test]
+fn affine_generators_canonicalize_gain_ranked_feature_order() {
+    let features = boolean_rows(3);
+    let labels = (0..features.rows())
+        .map(|row| u32::from(features.get(row, 2) == 1.0))
+        .collect();
+    let dataset = Dataset::new(features, labels).unwrap();
+
+    // Feature 2 ranks first by unary gain, ahead of features 0 and 1. Affine
+    // combinations must still use canonical feature order for GF(2)
+    // certification.
+    let (standalone, _) = generate_affine_with_diagnostics(&dataset, 1, 3, AffineConfig::default());
+    assert_canonical_affine_candidates(&standalone, "standalone generator");
+
+    let context = TrainingContext::new(Arc::new(dataset));
+    let incremental = context
+        .generate_candidates(
+            &context.root_view(),
+            LanguagePolicy::AffineOnly,
+            1,
+            3,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_canonical_affine_candidates(&incremental, "incremental generator");
 }
 
 #[test]

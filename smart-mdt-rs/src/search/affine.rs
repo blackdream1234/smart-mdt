@@ -68,7 +68,9 @@ pub fn generate_affine_with_diagnostics(
     let max_arity = cfg.max_arity.clamp(2, 4);
     for k in 2..=max_arity {
         for combo in combinations(pool.len(), k) {
-            let literals: Vec<Literal> = combo.iter().map(|&i| boolean_literal(pool[i])).collect();
+            let mut literals: Vec<Literal> =
+                combo.iter().map(|&i| boolean_literal(pool[i])).collect();
+            literals.sort_by_key(|literal| literal.atom.feature);
             for rhs in [false, true] {
                 before += 1;
                 let p = Predicate::Affine {

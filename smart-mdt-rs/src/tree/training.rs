@@ -955,10 +955,11 @@ impl TrainingContext {
         let mut output = Vec::new();
         for arity in 2..=3 {
             for combination in combinations(pool.len(), arity) {
-                let literals: Vec<_> = combination
+                let mut literals: Vec<_> = combination
                     .iter()
                     .map(|&index| boolean_literal(pool[index]))
                     .collect();
+                literals.sort_by_key(|literal| literal.atom.feature);
                 for rhs in [false, true] {
                     let predicate = Predicate::Affine {
                         literals: literals.clone(),
