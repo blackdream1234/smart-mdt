@@ -74,6 +74,8 @@ fn default_workflow_extracts_axps_only_after_final_tree_selection() {
     let first = extract_final_tree_axps(&final_tree, &data.features, 8, true);
     let second = extract_final_tree_axps(&final_tree, &data.features, 8, true);
     assert_eq!(first.results.len(), 8);
+    assert_eq!(first.valid_count, 8);
+    assert_eq!(first.minimal_count, 8);
     assert_eq!(first.mean_length, second.mean_length);
     assert_eq!(first.max_length, second.max_length);
     assert!(first.theorem_certified);
@@ -102,6 +104,8 @@ fn dataset_axp_metric_includes_rows_after_the_eighth_prefix() {
     assert_eq!(prefix.mean_length, 1.0);
     assert_eq!(prefix.max_length, 1);
     assert_eq!(complete.results.len(), 9);
+    assert_eq!(complete.valid_count, 9);
+    assert_eq!(complete.minimal_count, 9);
     assert_eq!(complete.mean_length, 10.0 / 9.0);
     assert_eq!(complete.max_length, 2);
     assert!(complete.theorem_certified);

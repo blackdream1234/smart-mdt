@@ -32,7 +32,21 @@ def create_benchmark(root: Path, *, optional: bool = True) -> Path:
                         "literals_after_prune": 18 - 4 * method_index + dataset_index,
                         "mean_axp_length": 3.2 - 0.25 * method_index,
                         "total_fit_time": 0.8 + 0.5 * method_index + 0.02 * run,
+                        "axp_extraction_stage": "post_selection_final_tree",
+                        "final_axp_rows": 9,
+                        "test_rows": 9,
+                        "axp_valid_rate": 1.0,
+                        "axp_minimal_rate": 1.0,
+                        "n_success": 9,
+                        "n_fail": 0,
+                        "category": "certified",
+                        "rejected_reason": "",
+                        "theorem_rejection_reason": "",
+                        "train_test_split_protocol": (
+                            "deterministic_hash_70_30_first_label"
+                        ),
                         "theorem_certified": True,
+                        "theorem_mode_used": True,
                         "path_certified": True,
                         "path_violation_count": 0,
                         "empirical_fallback_used": False,
@@ -68,6 +82,7 @@ def create_benchmark(root: Path, *, optional: bool = True) -> Path:
     pd.DataFrame(
         {
             "dataset": ["alpha", "beta", "gamma"],
+            "n_samples": [30, 30, 30],
             "skipped": [False, False, False],
             "feature_equal_to_label_count": [0, 0, 0],
         }

@@ -425,6 +425,9 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     axp_extraction_stage: "post_selection_final_tree".into(),
                     provisional_axp_evaluations: diagnostics.axp_rerank.candidates_evaluated,
                     final_axp_rows,
+                    test_rows: test.features.rows(),
+                    axp_valid_count: final_axps.valid_count,
+                    axp_minimal_count: final_axps.minimal_count,
                     theorem_certified,
                     language_family: declared_family,
                     backend: declared_backend,
@@ -1009,24 +1012,31 @@ fn path_certificate(backend: Backend) -> &'static str {
     }
 }
 
+fn axp_reporting_values(r: &ResultRow) -> (String, String, usize, usize) {
+    if r.final_axp_rows == 0 {
+        return ("NaN".into(), "NaN".into(), 0, 0);
+    }
+    let valid_rate = r.axp_valid_count as f64 / r.final_axp_rows as f64;
+    let minimal_rate = r.axp_minimal_count as f64 / r.final_axp_rows as f64;
+    let successes = r.axp_valid_count.min(r.axp_minimal_count);
+    let failures = r.final_axp_rows.saturating_sub(successes);
+    (
+        valid_rate.to_string(),
+        minimal_rate.to_string(),
+        successes,
+        failures,
+    )
+}
+
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,test_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
         } else {
             "empirical_or_adaptive"
         };
-        // Certified extraction explicitly re-checks sufficiency and
-        // single-deletion minimality for every reported AXp. For rejected rows
-        // no empirical rate was measured, so emit NaN rather than a false 0%.
-        let axp_rate = if r.theorem_certified { "1" } else { "NaN" };
-        let n_success = if r.theorem_certified {
-            r.final_axp_rows
-        } else {
-            0
-        };
-        let n_fail = 0usize;
+        let (axp_valid_rate, axp_minimal_rate, n_success, n_fail) = axp_reporting_values(r);
         let rejected_reason = if theorem_table_filter(r) {
             ""
         } else if r.theorem_rejection_reason.is_empty() {
@@ -1050,6 +1060,7 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.axp_extraction_stage.clone(),
             r.provisional_axp_evaluations.to_string(),
             r.final_axp_rows.to_string(),
+            r.test_rows.to_string(),
             r.theorem_certified.to_string(),
             format!("{:?}", r.language_family),
             format!("{:?}", r.backend),
@@ -1065,8 +1076,8 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             0.0f64.to_string(),
             r.tree_nodes.to_string(),
             r.mean_axp_length.to_string(),
-            axp_rate.into(),
-            axp_rate.into(),
+            axp_valid_rate,
+            axp_minimal_rate,
             n_success.to_string(),
             n_fail.to_string(),
             format!("{:?}", r.backend),
@@ -1196,5 +1207,20 @@ mod warning_tests {
     #[test]
     fn csv_escaping_preserves_embedded_quotes() {
         assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn axp_reporting_preserves_verified_success_and_failure_counts() {
+        let row = ResultRow {
+            final_axp_rows: 8,
+            axp_valid_count: 3,
+            axp_minimal_count: 2,
+            ..ResultRow::default()
+        };
+        let (valid_rate, minimal_rate, successes, failures) = axp_reporting_values(&row);
+        assert_eq!(valid_rate, "0.375");
+        assert_eq!(minimal_rate, "0.25");
+        assert_eq!(successes, 2);
+        assert_eq!(failures, 6);
     }
 }

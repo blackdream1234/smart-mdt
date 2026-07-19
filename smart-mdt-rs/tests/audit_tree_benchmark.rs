@@ -65,6 +65,11 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         max_depth_reached: 0,
         mean_axp_length: 0.0,
         axp_time: 0.0,
+        axp_extraction_stage: "post_selection_final_tree".into(),
+        final_axp_rows: 2,
+        test_rows: 2,
+        axp_valid_count: 2,
+        axp_minimal_count: 2,
         theorem_certified: true,
         language_family: LanguageFamily::Unary,
         backend: Backend::StructuralHorn,
@@ -110,6 +115,22 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         ..base.clone()
     }));
     assert!(!theorem_table_filter(&ResultRow {
+        axp_extraction_stage: "provisional_candidate".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        final_axp_rows: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        axp_valid_count: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        axp_minimal_count: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
         method: "tuned-experimental".into(),
         ..base.clone()
     }));
@@ -130,6 +151,11 @@ fn cals_theorem_filter_requires_the_complete_audit_boundary() {
         path_theory_state: "horn|affine_gf2".into(),
         path_backend: "StructuralHorn|Gf2Gaussian".into(),
         all_predicates_backend_allowed: true,
+        axp_extraction_stage: "post_selection_final_tree".into(),
+        final_axp_rows: 2,
+        test_rows: 2,
+        axp_valid_count: 2,
+        axp_minimal_count: 2,
         ..ResultRow::default()
     };
     assert!(theorem_table_filter(&admitted));

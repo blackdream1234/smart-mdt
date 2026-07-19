@@ -18,6 +18,9 @@ pub struct ResultRow {
     pub axp_extraction_stage: String,
     pub provisional_axp_evaluations: usize,
     pub final_axp_rows: usize,
+    pub test_rows: usize,
+    pub axp_valid_count: usize,
+    pub axp_minimal_count: usize,
     pub theorem_certified: bool,
     pub language_family: LanguageFamily,
     pub backend: Backend,
@@ -108,6 +111,9 @@ impl Default for ResultRow {
             axp_extraction_stage: String::new(),
             provisional_axp_evaluations: 0,
             final_axp_rows: 0,
+            test_rows: 0,
+            axp_valid_count: 0,
+            axp_minimal_count: 0,
             theorem_certified: false,
             language_family: LanguageFamily::Unary,
             backend: Backend::None,
@@ -193,6 +199,11 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         || r.incompatible_cached_subtree_reused
         || !r.all_predicates_backend_allowed
         || !r.theorem_rejection_reason.is_empty()
+        || r.axp_extraction_stage != "post_selection_final_tree"
+        || r.test_rows == 0
+        || r.final_axp_rows != r.test_rows
+        || r.axp_valid_count != r.final_axp_rows
+        || r.axp_minimal_count != r.final_axp_rows
         || !path_metadata_is_valid(r)
     {
         return false;

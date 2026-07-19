@@ -162,7 +162,9 @@ def _certification_sentence(certification: pd.DataFrame) -> str:
         f"{finding('forbidden_predicates', 'forbidden predicates')}, "
         f"{finding('feature_label_leakage', 'feature-label leakage findings')}, "
         f"{finding('path_violations', 'path violations')}, and "
-        f"{finding('empirical_fallbacks', 'empirical fallbacks')}."
+        f"{finding('empirical_fallbacks', 'empirical fallbacks')}, "
+        f"{finding('axp_evidence_violations', 'AXp evidence violations')}, and "
+        f"{finding('full_row_axp_violations', 'full-row AXp violations')}."
     )
     if "evidence_available" in indexed:
         unavailable = [

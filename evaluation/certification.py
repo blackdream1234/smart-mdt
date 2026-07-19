@@ -78,6 +78,16 @@ PATH_STATE_BACKENDS = {
     "two_sat": "TwoSat",
     "affine_gf2": "Gf2Gaussian",
 }
+METHOD_CERTIFIED_LANGUAGES = {
+    "unary": "Unary",
+    "horn": "Horn",
+    "antihorn": "AntiHorn",
+    "square2cnf": "Square2Cnf",
+    "affine": "Affine",
+    "smart_certified": "SmartCertified",
+    "cals": "SmartCertified",
+    "cals_compact_explain": "SmartCertified",
+}
 TEXTUAL_CERTIFICATE_COLUMNS = (
     "language_family",
     "backend",
@@ -88,12 +98,32 @@ TEXTUAL_CERTIFICATE_COLUMNS = (
 )
 BOOLEAN_CERTIFICATE_COLUMNS = (
     "theorem_certified",
+    "theorem_mode_used",
     "path_certified",
     "all_predicates_backend_allowed",
     "incompatible_cached_subtree_reused",
     "empirical_fallback_used",
 )
 COUNT_CERTIFICATE_COLUMNS = ("path_violation_count",)
+AXP_TEXTUAL_CERTIFICATE_COLUMNS = (
+    "axp_extraction_stage",
+    "category",
+    "rejected_reason",
+    "theorem_rejection_reason",
+    "train_test_split_protocol",
+)
+AXP_INTEGER_CERTIFICATE_COLUMNS = (
+    "final_axp_rows",
+    "test_rows",
+    "n_success",
+    "n_fail",
+)
+AXP_RATE_CERTIFICATE_COLUMNS = ("axp_valid_rate", "axp_minimal_rate")
+AXP_CERTIFICATE_COLUMNS = (
+    *AXP_TEXTUAL_CERTIFICATE_COLUMNS,
+    *AXP_INTEGER_CERTIFICATE_COLUMNS,
+    *AXP_RATE_CERTIFICATE_COLUMNS,
+)
 
 
 def _strict_bool_series(
@@ -150,12 +180,12 @@ def _textual_certificate_eligibility(
         return frozenset(parts)
 
     def compatible(row: pd.Series) -> bool:
-        language = (
-            str(row["language_family"]).strip()
-            if "language_family" in textual_columns
-            else None
-        )
-        if language is not None and language not in CERTIFIED_LANGUAGES:
+        method = str(row["method"]).strip()
+        language = str(row["language_family"]).strip()
+        if (
+            language not in CERTIFIED_LANGUAGES
+            or METHOD_CERTIFIED_LANGUAGES.get(method) != language
+        ):
             return False
 
         if language in SINGLE_FAMILY_CERTIFICATES:
@@ -224,17 +254,126 @@ def _textual_certificate_eligibility(
     return results.apply(compatible, axis=1)
 
 
+def _axp_evidence_eligibility(
+    results: pd.DataFrame,
+) -> pd.Series | None:
+    required = set(AXP_CERTIFICATE_COLUMNS)
+    present = required.intersection(results.columns)
+    if not present:
+        return None
+    if present != required:
+        missing = sorted(required.difference(present))
+        raise EvaluationDataError(
+            "full_results.csv contains incomplete AXp certificate evidence; "
+            f"missing: {', '.join(missing)}"
+        )
+
+    integer_values: dict[str, pd.Series] = {}
+    for column in AXP_INTEGER_CERTIFICATE_COLUMNS:
+        try:
+            integer_values[column] = safe_nonnegative_integers(
+                results[column], column=column
+            )
+        except ValueError as error:
+            raise EvaluationDataError(str(error)) from error
+
+    rate_values: dict[str, pd.Series] = {}
+    for column in AXP_RATE_CERTIFICATE_COLUMNS:
+        try:
+            values = pd.to_numeric(results[column], errors="raise")
+        except (TypeError, ValueError) as error:
+            raise EvaluationDataError(
+                f"audit column {column!r} must be numeric"
+            ) from error
+        finite = values.notna()
+        if (
+            (~np.isfinite(values.loc[finite].to_numpy(dtype=float))).any()
+            or ((values.loc[finite] < 0.0) | (values.loc[finite] > 1.0)).any()
+        ):
+            raise EvaluationDataError(
+                f"audit column {column!r} values must be finite or missing and "
+                "finite values must lie in [0, 1]"
+            )
+        rate_values[column] = values
+
+    def text(column: str) -> pd.Series:
+        return results[column].fillna("").astype(str).str.strip()
+
+    final_rows = integer_values["final_axp_rows"]
+    test_rows = integer_values["test_rows"]
+    successes = integer_values["n_success"]
+    failures = integer_values["n_fail"]
+    return (
+        text("axp_extraction_stage").eq("post_selection_final_tree")
+        & text("category").eq("certified")
+        & text("rejected_reason").eq("")
+        & text("theorem_rejection_reason").eq("")
+        & text("train_test_split_protocol").eq(
+            "deterministic_hash_70_30_first_label"
+        )
+        & final_rows.gt(0)
+        & final_rows.eq(test_rows)
+        & successes.eq(final_rows)
+        & failures.eq(0)
+        & rate_values["axp_valid_rate"].eq(1.0)
+        & rate_values["axp_minimal_rate"].eq(1.0)
+    )
+
+
+def _full_row_axp_eligibility(
+    results: pd.DataFrame,
+    metadata: pd.DataFrame | None,
+) -> pd.Series | None:
+    if metadata is None or "n_samples" not in metadata or "test_rows" not in results:
+        return None
+    try:
+        sample_counts = safe_nonnegative_integers(
+            metadata["n_samples"], column="n_samples"
+        )
+        actual = safe_nonnegative_integers(
+            results["test_rows"], column="test_rows"
+        )
+    except ValueError as error:
+        raise EvaluationDataError(str(error)) from error
+
+    expected_by_dataset: dict[str, int] = {}
+    for dataset, samples in zip(metadata["dataset"].astype(str), sample_counts):
+        sample_count = int(samples)
+        rounded_train = (7 * sample_count + 5) // 10
+        upper = max(sample_count - 1, 1)
+        train_count = min(max(rounded_train, 1), upper)
+        expected_by_dataset[dataset.strip()] = sample_count - train_count
+    expected = results["dataset"].map(expected_by_dataset)
+    if expected.isna().any():
+        missing = sorted(set(results.loc[expected.isna(), "dataset"].astype(str)))
+        raise EvaluationDataError(
+            "dataset_metadata.csv lacks sample counts for result datasets: "
+            + ", ".join(missing)
+        )
+    return actual.eq(expected.astype(object))
+
+
 def _result_eligibility(results: pd.DataFrame) -> pd.Series | None:
     theorem = _strict_bool_series(results, "theorem_certified")
+    theorem_mode = _strict_bool_series(results, "theorem_mode_used")
     path = _strict_bool_series(results, "path_certified")
     violations = _strict_count_series(results, "path_violation_count")
     allowed = _strict_bool_series(results, "all_predicates_backend_allowed")
     cached = _strict_bool_series(results, "incompatible_cached_subtree_reused")
     fallback = _strict_bool_series(results, "empirical_fallback_used")
-    evidence = (theorem, path, violations, allowed, cached, fallback)
+    evidence = (
+        theorem,
+        theorem_mode,
+        path,
+        violations,
+        allowed,
+        cached,
+        fallback,
+    )
     if any(value is None for value in evidence):
         return None
     assert theorem is not None
+    assert theorem_mode is not None
     assert path is not None
     assert violations is not None
     assert allowed is not None
@@ -244,11 +383,22 @@ def _result_eligibility(results: pd.DataFrame) -> pd.Series | None:
         raise EvaluationDataError(
             "path_certified is inconsistent with path_violation_count"
         )
-    eligible = theorem & path & violations.eq(0) & allowed & ~cached & ~fallback
+    eligible = (
+        theorem
+        & theorem_mode
+        & path
+        & violations.eq(0)
+        & allowed
+        & ~cached
+        & ~fallback
+    )
     textual = _textual_certificate_eligibility(results)
     if textual is None:
         return None
-    return eligible & textual
+    axp = _axp_evidence_eligibility(results)
+    if axp is None:
+        return None
+    return eligible & textual & axp
 
 
 def _validate_result_partition(
@@ -262,7 +412,7 @@ def _validate_result_partition(
         missing = len(expected_keys.difference(actual_keys))
         extra = len(actual_keys.difference(expected_keys))
         raise EvaluationDataError(
-            f"{name} does not match full_results.csv certification partition "
+            f"{name} does not match full_results.csv row partition "
             f"({missing} missing keys, {extra} extra keys)"
         )
 
@@ -310,6 +460,7 @@ def _validate_result_partition(
         *TEXTUAL_CERTIFICATE_COLUMNS,
         *BOOLEAN_CERTIFICATE_COLUMNS,
         *COUNT_CERTIFICATE_COLUMNS,
+        *AXP_CERTIFICATE_COLUMNS,
     )
     missing = sorted(set(required_audit_columns).difference(actual.columns))
     if missing:
@@ -341,6 +492,37 @@ def _validate_result_partition(
         if not np.array_equal(left.to_numpy(), right.to_numpy()):
             raise EvaluationDataError(
                 f"{name} audit column {column!r} disagrees with full_results.csv"
+            )
+    for column in AXP_TEXTUAL_CERTIFICATE_COLUMNS:
+        left = actual[column].fillna("").astype(str).str.strip().to_numpy()
+        right = canonical[column].fillna("").astype(str).str.strip().to_numpy()
+        if not np.array_equal(left, right):
+            raise EvaluationDataError(
+                f"{name} AXp audit column {column!r} disagrees with full_results.csv"
+            )
+    for column in AXP_INTEGER_CERTIFICATE_COLUMNS:
+        try:
+            left = safe_nonnegative_integers(actual[column], column=column)
+            right = safe_nonnegative_integers(canonical[column], column=column)
+        except ValueError as error:
+            raise EvaluationDataError(f"{name}: {error}") from error
+        if not np.array_equal(left.to_numpy(), right.to_numpy()):
+            raise EvaluationDataError(
+                f"{name} AXp audit column {column!r} disagrees with full_results.csv"
+            )
+    for column in AXP_RATE_CERTIFICATE_COLUMNS:
+        try:
+            left = pd.to_numeric(actual[column], errors="raise").to_numpy(dtype=float)
+            right = pd.to_numeric(canonical[column], errors="raise").to_numpy(
+                dtype=float
+            )
+        except (TypeError, ValueError) as error:
+            raise EvaluationDataError(
+                f"{name} AXp audit column {column!r} must be numeric"
+            ) from error
+        if not np.array_equal(left, right, equal_nan=True):
+            raise EvaluationDataError(
+                f"{name} AXp audit column {column!r} disagrees with full_results.csv"
             )
 
 
@@ -433,6 +615,7 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
     metadata = data.optional("dataset_metadata.csv")
     theorem = data.optional("theorem_certified_results.csv")
     empirical = data.optional("empirical_results.csv")
+    axp_metadata = data.optional("axp_metadata.csv")
 
     dataset_count = int(results["dataset"].nunique())
     skipped, leakage = _metadata_audit(
@@ -440,6 +623,9 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
     )
 
     eligibility = _result_eligibility(results)
+    full_row_axp = _full_row_axp_eligibility(results, metadata)
+    if eligibility is not None and full_row_axp is not None:
+        eligibility = eligibility & full_row_axp
     if eligibility is None:
         if theorem is not None or empirical is not None:
             raise EvaluationDataError(
@@ -458,6 +644,10 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
         if empirical is not None:
             _validate_result_partition(
                 "empirical_results.csv", empirical, rejected_results
+            )
+        if axp_metadata is not None:
+            _validate_result_partition(
+                "axp_metadata.csv", axp_metadata, results
             )
         theorem_rows = int(eligibility.sum())
         empirical_rows = int((~eligibility).sum())
@@ -480,6 +670,8 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
     allowed = _strict_bool_series(results, "all_predicates_backend_allowed")
     cached = _strict_bool_series(results, "incompatible_cached_subtree_reused")
     fallback = _strict_bool_series(results, "empirical_fallback_used")
+    theorem_claims = _strict_bool_series(results, "theorem_certified")
+    axp_evidence = _axp_evidence_eligibility(results)
     _textual_certificate_eligibility(results)
     if allowed is not None:
         forbidden = int((~allowed).sum())
@@ -487,6 +679,14 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
         forbidden = None
     cached_violations = int(cached.sum()) if cached is not None else None
     empirical_fallbacks = int(fallback.sum()) if fallback is not None else None
+    if theorem_claims is not None and axp_evidence is not None:
+        axp_evidence_violations = int((theorem_claims & ~axp_evidence).sum())
+    else:
+        axp_evidence_violations = None
+    if theorem_claims is not None and full_row_axp is not None:
+        full_row_axp_violations = int((theorem_claims & ~full_row_axp).sum())
+    else:
+        full_row_axp_violations = None
 
     records = [
         _audit_record("datasets", dataset_count, dataset_count),
@@ -512,6 +712,18 @@ def certification_summary(data: BenchmarkData) -> pd.DataFrame:
         _audit_record(
             "empirical_fallbacks",
             empirical_fallbacks,
+            len(results),
+            violation=True,
+        ),
+        _audit_record(
+            "axp_evidence_violations",
+            axp_evidence_violations,
+            len(results),
+            violation=True,
+        ),
+        _audit_record(
+            "full_row_axp_violations",
+            full_row_axp_violations,
             len(results),
             violation=True,
         ),

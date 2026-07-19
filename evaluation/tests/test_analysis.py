@@ -45,6 +45,8 @@ def test_certification_and_optional_diagnostic_summaries(
         "path_violations",
         "cached_subtree_violations",
         "empirical_fallbacks",
+        "axp_evidence_violations",
+        "full_row_axp_violations",
     ):
         assert certification.loc[item, "count"] == 0
 
@@ -188,6 +190,8 @@ def test_missing_optional_audit_evidence_is_reported_as_unverified(
         "path_violations",
         "cached_subtree_violations",
         "empirical_fallbacks",
+        "axp_evidence_violations",
+        "full_row_axp_violations",
     ):
         assert not audit.loc[item, "evidence_available"]
         assert audit.loc[item, "status"] == "not_audited"
@@ -355,6 +359,7 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
 
 @pytest.mark.parametrize(
     (
+        "method",
         "language",
         "backend",
         "path_certificate",
@@ -363,6 +368,15 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
     ),
     (
         (
+            "unary",
+            "Unary",
+            "StructuralHorn",
+            "HornCnf",
+            "uncommitted",
+            "StructuralHorn",
+        ),
+        (
+            "horn",
             "Horn",
             "StructuralHorn",
             "HornCnf",
@@ -370,6 +384,7 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
             "StructuralHorn",
         ),
         (
+            "horn",
             "Horn",
             "StructuralHorn",
             "HornCnf",
@@ -377,6 +392,7 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
             "StructuralHorn",
         ),
         (
+            "antihorn",
             "AntiHorn",
             "StructuralAntiHorn",
             "AntiHornCnf",
@@ -384,6 +400,7 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
             "StructuralHorn|StructuralAntiHorn",
         ),
         (
+            "square2cnf",
             "Square2Cnf",
             "TwoSat",
             "TwoCnf",
@@ -391,6 +408,7 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
             "StructuralHorn|TwoSat",
         ),
         (
+            "affine",
             "Affine",
             "Gf2Gaussian",
             "AffineGf2",
@@ -400,29 +418,152 @@ def test_empirical_best_certified_is_rejected_from_theorem_without_being_forbidd
     ),
 )
 def test_single_family_certificate_accepts_uncommitted_path_states(
-    benchmark_dir: Path,
+    tmp_path: Path,
+    method: str,
     language: str,
     backend: str,
     path_certificate: str,
     path_theory_state: str,
     path_backend: str,
 ) -> None:
+    benchmark = create_benchmark(tmp_path / "single-family", optional=False)
+    path = benchmark / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame = frame.loc[frame["method"] == "smart_certified"].copy()
+    frame["method"] = method
+    frame["language_family"] = language
+    frame["backend"] = backend
+    frame["axp_backend"] = backend
+    frame["path_certificate"] = path_certificate
+    frame["path_theory_state"] = path_theory_state
+    frame["path_backend"] = path_backend
+    frame.to_csv(path, index=False)
+
+    audit = certification_summary(load_benchmark_folder(benchmark)).set_index(
+        "audit_item"
+    )
+    assert audit.loc["theorem_certified_rows", "count"] == 9
+    assert audit.loc["empirical_rows", "count"] == 0
+
+
+def test_certificate_rejects_method_language_mismatch(tmp_path: Path) -> None:
+    benchmark = create_benchmark(tmp_path / "method-language-mismatch", optional=False)
+    path = benchmark / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame = frame.loc[frame["method"] == "smart_certified"].copy()
+    frame["method"] = "unary"
+    frame["language_family"] = "Horn"
+    frame["backend"] = "StructuralHorn"
+    frame["axp_backend"] = "StructuralHorn"
+    frame["path_certificate"] = "HornCnf"
+    frame["path_theory_state"] = "uncommitted|horn"
+    frame["path_backend"] = "StructuralHorn"
+    frame.to_csv(path, index=False)
+
+    audit = certification_summary(load_benchmark_folder(benchmark)).set_index(
+        "audit_item"
+    )
+    assert audit.loc["theorem_certified_rows", "count"] == 0
+    assert audit.loc["empirical_rows", "count"] == 9
+
+
+def test_theorem_mode_false_never_enters_theorem_partition(tmp_path: Path) -> None:
+    benchmark = create_benchmark(tmp_path / "theorem-mode-disabled", optional=False)
+    path = benchmark / "full_results.csv"
+    frame = pd.read_csv(path)
+    frame["theorem_mode_used"] = False
+    frame.to_csv(path, index=False)
+
+    audit = certification_summary(load_benchmark_folder(benchmark)).set_index(
+        "audit_item"
+    )
+    assert audit.loc["theorem_certified_rows", "count"] == 0
+    assert audit.loc["empirical_rows", "count"] == len(frame)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (
+        ("axp_extraction_stage", "provisional_candidate"),
+        ("final_axp_rows", 0),
+        ("test_rows", 8),
+        ("axp_valid_rate", 0.0),
+        ("axp_minimal_rate", 0.0),
+        ("n_success", 0),
+        ("n_fail", 9),
+        ("category", "certified_but_unverified"),
+        ("rejected_reason", "AXp verification failed"),
+        ("theorem_rejection_reason", "AXp verification failed"),
+        ("train_test_split_protocol", "unknown"),
+    ),
+)
+def test_theorem_partition_rejects_bad_axp_evidence(
+    benchmark_dir: Path,
+    column: str,
+    value: object,
+) -> None:
     for filename in ("full_results.csv", "theorem_certified_results.csv"):
         path = benchmark_dir / filename
         frame = pd.read_csv(path)
-        frame["language_family"] = language
-        frame["backend"] = backend
-        frame["axp_backend"] = backend
-        frame["path_certificate"] = path_certificate
-        frame["path_theory_state"] = path_theory_state
-        frame["path_backend"] = path_backend
+        frame[column] = value
         frame.to_csv(path, index=False)
 
-    audit = certification_summary(load_benchmark_folder(benchmark_dir)).set_index(
+    with pytest.raises(
+        EvaluationDataError,
+        match="theorem_certified_results.csv.*does not match",
+    ):
+        certification_summary(load_benchmark_folder(benchmark_dir))
+
+
+def test_partial_axp_certificate_evidence_is_rejected(
+    benchmark_dir: Path,
+) -> None:
+    path = benchmark_dir / "full_results.csv"
+    frame = pd.read_csv(path).drop(columns=["n_fail"])
+    frame.to_csv(path, index=False)
+    with pytest.raises(
+        EvaluationDataError,
+        match="incomplete AXp certificate evidence.*n_fail",
+    ):
+        certification_summary(load_benchmark_folder(benchmark_dir))
+
+
+def test_axp_metadata_must_match_full_results(benchmark_dir: Path) -> None:
+    path = benchmark_dir / "axp_metadata.csv"
+    frame = pd.read_csv(path)
+    frame.loc[0, "n_success"] = 0
+    frame.to_csv(path, index=False)
+    with pytest.raises(
+        EvaluationDataError,
+        match="axp_metadata.csv.*n_success.*disagrees",
+    ):
+        certification_summary(load_benchmark_folder(benchmark_dir))
+
+
+def test_test_row_count_is_cross_checked_against_dataset_metadata(
+    tmp_path: Path,
+) -> None:
+    benchmark = create_benchmark(tmp_path / "short-axp-prefix", optional=False)
+    result_path = benchmark / "full_results.csv"
+    frame = pd.read_csv(result_path)
+    frame["final_axp_rows"] = 8
+    frame["test_rows"] = 8
+    frame["n_success"] = 8
+    frame.to_csv(result_path, index=False)
+    pd.DataFrame(
+        {
+            "dataset": ["alpha", "beta", "gamma"],
+            "n_samples": [30, 30, 30],
+            "skipped": [False, False, False],
+            "feature_equal_to_label_count": [0, 0, 0],
+        }
+    ).to_csv(benchmark / "dataset_metadata.csv", index=False)
+
+    audit = certification_summary(load_benchmark_folder(benchmark)).set_index(
         "audit_item"
     )
-    assert audit.loc["theorem_certified_rows", "count"] == 27
-    assert audit.loc["empirical_rows", "count"] == 0
+    assert audit.loc["theorem_certified_rows", "count"] == 0
+    assert audit.loc["full_row_axp_violations", "count"] == len(frame)
 
 
 def test_single_family_certificate_rejects_state_backend_mismatch(

@@ -12,17 +12,295 @@ use smart_mdt_rs::{
     tree::{learn, CalsConfig, LanguagePolicy, LearnerConfig, TreeSearchStrategy},
     Result,
 };
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::PathBuf};
 
 fn arg(args: &[String], name: &str) -> Option<String> {
-    args.windows(2).find(|w| w[0] == name).map(|w| w[1].clone())
+    args.windows(2)
+        .find(|window| window[0] == name && !window[1].starts_with("--"))
+        .map(|window| window[1].clone())
 }
 
 fn has_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|a| a == name)
 }
 
+fn option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--tree-search"
+            | "--score-profile"
+            | "--cals-profile"
+            | "--audience"
+            | "--depths"
+            | "--method"
+            | "--methods"
+            | "--output"
+            | "--data"
+            | "--dataset"
+            | "--node-path"
+            | "--tree-beam-width"
+            | "--candidate-beam-width"
+            | "--lookahead-depth"
+            | "--node-budget"
+            | "--branch-and-bound-threshold"
+            | "--cache-max-entries"
+            | "--threads"
+            | "--axp-shortlist"
+            | "--max-depth"
+            | "--runs"
+            | "--depth"
+            | "--top-k"
+            | "--max-candidates-per-node"
+            | "--beam-width"
+            | "--row"
+            | "--time-budget-ms"
+            | "--seed"
+            | "--balanced-accuracy-epsilon"
+            | "--minimum-minority-recall"
+            | "--root-collapse-majority-threshold"
+            | "--prune-validation-fraction"
+            | "--prune-alpha-nodes"
+            | "--prune-alpha-leaves"
+            | "--prune-alpha-literals"
+            | "--accuracy-epsilon"
+    )
+}
+
+fn is_boolean_option(option: &str) -> bool {
+    matches!(
+        option,
+        "--branch-and-bound"
+            | "--no-branch-and-bound"
+            | "--cache"
+            | "--no-cache"
+            | "--parallel"
+            | "--no-parallel"
+            | "--adaptive-language"
+            | "--no-adaptive-language"
+            | "--prune"
+            | "--no-prune"
+            | "--class-aware-pruning"
+            | "--axp-rerank"
+            | "--quick"
+            | "--strict-data-checks"
+    )
+}
+
+fn is_cals_tuning_option(option: &str) -> bool {
+    matches!(
+        option,
+        "--tree-search"
+            | "--tree-beam-width"
+            | "--candidate-beam-width"
+            | "--lookahead-depth"
+            | "--node-budget"
+            | "--time-budget-ms"
+            | "--score-profile"
+            | "--branch-and-bound"
+            | "--no-branch-and-bound"
+            | "--branch-and-bound-threshold"
+            | "--cache"
+            | "--no-cache"
+            | "--cache-max-entries"
+            | "--parallel"
+            | "--no-parallel"
+            | "--threads"
+            | "--adaptive-language"
+            | "--no-adaptive-language"
+            | "--prune"
+            | "--no-prune"
+            | "--class-aware-pruning"
+            | "--balanced-accuracy-epsilon"
+            | "--minimum-minority-recall"
+            | "--root-collapse-majority-threshold"
+            | "--prune-validation-fraction"
+            | "--prune-alpha-nodes"
+            | "--prune-alpha-leaves"
+            | "--prune-alpha-literals"
+            | "--accuracy-epsilon"
+            | "--axp-rerank"
+            | "--axp-shortlist"
+            | "--cals-profile"
+    )
+}
+
+fn validate_option_tokens(args: &[String]) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    let mut index = 2;
+    while let Some(option) = args.get(index) {
+        if !option.starts_with("--") {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unexpected positional argument {option}"
+            )));
+        }
+        if !option_takes_value(option) && !is_boolean_option(option) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown option {option}"
+            )));
+        }
+        if !seen.insert(option.as_str()) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "duplicate option {option}"
+            )));
+        }
+        if option_takes_value(option) {
+            let Some(value) = args.get(index + 1) else {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{option} requires a value"
+                )));
+            };
+            if value.starts_with("--") {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{option} requires a value"
+                )));
+            }
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
+fn reject_mutually_exclusive_options(args: &[String]) -> Result<()> {
+    for (enabled, disabled) in [
+        ("--branch-and-bound", "--no-branch-and-bound"),
+        ("--cache", "--no-cache"),
+        ("--parallel", "--no-parallel"),
+        ("--adaptive-language", "--no-adaptive-language"),
+        ("--prune", "--no-prune"),
+    ] {
+        if has_flag(args, enabled) && has_flag(args, disabled) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "{enabled} and {disabled} are mutually exclusive"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_command_options(args: &[String]) -> Result<()> {
+    let Some(command) = args.get(1).map(String::as_str) else {
+        return Ok(());
+    };
+    let benchmark_is_quick =
+        command == "benchmark" && (has_flag(args, "--quick") || arg(args, "--data").is_none());
+    for option in args.iter().skip(2).filter(|value| value.starts_with("--")) {
+        let allowed = match command {
+            "train" => {
+                matches!(option.as_str(), "--data" | "--method" | "--max-depth")
+                    || is_cals_tuning_option(option)
+            }
+            "benchmark" if benchmark_is_quick => {
+                matches!(option.as_str(), "--quick" | "--output")
+            }
+            "benchmark" => {
+                matches!(
+                    option.as_str(),
+                    "--data"
+                        | "--depths"
+                        | "--runs"
+                        | "--methods"
+                        | "--output"
+                        | "--seed"
+                        | "--strict-data-checks"
+                ) || is_cals_tuning_option(option)
+            }
+            "debug-candidates" => matches!(
+                option.as_str(),
+                "--data"
+                    | "--dataset"
+                    | "--method"
+                    | "--depth"
+                    | "--node-path"
+                    | "--top-k"
+                    | "--output"
+                    | "--seed"
+                    | "--max-candidates-per-node"
+                    | "--beam-width"
+            ),
+            "explain" => {
+                matches!(
+                    option.as_str(),
+                    "--data" | "--method" | "--max-depth" | "--row" | "--audience" | "--output"
+                ) || is_cals_tuning_option(option)
+            }
+            _ => false,
+        };
+        if !allowed {
+            let context = if benchmark_is_quick {
+                "benchmark --quick"
+            } else {
+                command
+            };
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "{option} is not supported with {context}"
+            )));
+        }
+    }
+
+    if matches!(command, "train" | "explain") {
+        let default_method = if command == "train" {
+            "horn"
+        } else {
+            "cals_compact_explain"
+        };
+        let method = arg(args, "--method").unwrap_or_else(|| default_method.into());
+        for option in args
+            .iter()
+            .skip(2)
+            .filter(|value| is_cals_tuning_option(value))
+        {
+            let accepted = method == "cals"
+                || (method == "cals_compact_explain" && option != "--cals-profile");
+            if !accepted {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{option} requires --method cals or cals_compact_explain"
+                )));
+            }
+        }
+    }
+
+    if command == "benchmark" && !benchmark_is_quick {
+        let methods = arg(args, "--methods").unwrap_or_default();
+        let has_cals_method = methods
+            .split(',')
+            .map(str::trim)
+            .any(|method| matches!(method, "cals" | "cals_compact_explain"));
+        for option in args
+            .iter()
+            .skip(2)
+            .filter(|value| is_cals_tuning_option(value))
+        {
+            if option == "--cals-profile" {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(
+                    "--cals-profile is not consumed by the benchmark command".into(),
+                ));
+            }
+            if !has_cals_method {
+                return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                    "{option} requires cals or cals_compact_explain in --methods"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_cli_args(args: &[String]) -> Result<()> {
+    if let Some(command) = args.get(1) {
+        if !matches!(
+            command.as_str(),
+            "train" | "benchmark" | "debug-candidates" | "explain"
+        ) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown command {command}"
+            )));
+        }
+    }
+    validate_option_tokens(args)?;
+    validate_command_options(args)?;
+    reject_mutually_exclusive_options(args)?;
     for name in [
         "--tree-search",
         "--score-profile",
@@ -514,7 +792,12 @@ fn main() -> Result<()> {
             fs::write(output.join("human_explanation.txt"), text)?;
             println!("wrote verified_explanation.json and human_explanation.txt");
         }
-        _ => println!("usage: smart-mdt-rs train|benchmark|debug-candidates|explain"),
+        Some(command) => {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "unknown command {command}"
+            )))
+        }
+        None => println!("usage: smart-mdt-rs train|benchmark|debug-candidates|explain"),
     }
     Ok(())
 }
