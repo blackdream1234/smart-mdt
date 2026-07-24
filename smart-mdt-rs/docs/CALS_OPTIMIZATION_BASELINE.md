@@ -1,5 +1,10 @@
 # CALS-MDT optimization baseline
 
+> **Historical pre-audit evidence.** This baseline predates the A01/A13 AXp
+> soundness and full-held-out-row corrections. Its recorded measurements are
+> retained for development history only and are not publication or freeze
+> evidence. See `FINAL_FREEZE_REPORT.md` for the current artifact decision.
+
 ## Scope
 
 This baseline was captured from base commit

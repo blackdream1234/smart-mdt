@@ -15,5 +15,16 @@ cargo run --release -- benchmark --quick
 ## Full benchmark
 
 ```bash
-cargo run --release -- benchmark --data ../data --depths 5,7 --runs 10 --methods unary,horn,antihorn,square2cnf,affine,smart_certified --output ../rust_results
+cargo run --release -- benchmark \
+  --data ../data \
+  --depths 5,7 \
+  --runs 10 \
+  --methods unary,horn,antihorn,square2cnf,affine,smart_certified,cals,cals_compact_explain \
+  --output ../<fresh-output-directory> \
+  --strict-data-checks
 ```
+
+The current freeze decision, exact benchmark commit, and authoritative artifact
+paths are recorded in [`docs/FINAL_FREEZE_REPORT.md`](docs/FINAL_FREEZE_REPORT.md).
+Legacy smoke and pre-audit result folders are retained only as historical
+development evidence.

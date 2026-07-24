@@ -1,0 +1,12 @@
+dataset,method,warning_type,warning_records,affected_rows,percentage
+balance-scale-bin,cals_compact_explain,method_all_constant_trees,1,20,2.04081632653
+balance-scale-bin,cals_compact_explain,method_all_zero_axp,1,20,2.04081632653
+seismic_bumps-bin,cals_compact_explain,method_all_constant_trees,1,20,2.04081632653
+seismic_bumps-bin,cals_compact_explain,method_all_zero_axp,1,20,2.04081632653
+winequality-red-bin,all,suspicious_majority_rate,1,1,2.04081632653
+winequality-red-bin,cals,high_accuracy_tiny_tree,20,20,40.8163265306
+winequality-red-bin,cals,method_all_constant_trees,1,20,2.04081632653
+winequality-red-bin,cals,method_all_zero_axp,1,20,2.04081632653
+winequality-red-bin,cals_compact_explain,high_accuracy_tiny_tree,20,20,40.8163265306
+winequality-red-bin,cals_compact_explain,method_all_constant_trees,1,20,2.04081632653
+winequality-red-bin,cals_compact_explain,method_all_zero_axp,1,20,2.04081632653

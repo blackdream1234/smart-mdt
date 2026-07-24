@@ -1,5 +1,10 @@
 # CALS-MDT performance report
 
+> **Historical pre-audit evidence.** The numerical comparisons in this report
+> predate the A01/A13 AXp soundness and full-held-out-row corrections. They are
+> retained for development history only and are not publication or freeze
+> evidence. See `FINAL_FREEZE_REPORT.md` for the current artifact decision.
+
 ## Baseline
 
 The immutable pre-optimization baseline is recorded in

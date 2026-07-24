@@ -1,0 +1,57 @@
+\begin{table}[htbp]
+\centering
+\caption{Paired Wilcoxon tests with Holm-adjusted p-values and bootstrap confidence intervals.}
+\label{tab:significance-tests}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrrrrrrr}
+\toprule
+Comparison & Metric & Pairs & Mean diff. & Wilcoxon W & p-value & Holm p-value & Bootstrap lower & Bootstrap upper \\
+\midrule
+SmartCertified vs CALS-MDT & Accuracy & 46 & 0.005 & 273.000 & 0.006 & 0.029 & 0.001 & 0.009 \\
+SmartCertified vs CALS-MDT & Tree nodes & 46 & -37.959 & 0.000 & 0.000 & 0.000 & -45.818 & -30.680 \\
+SmartCertified vs CALS-MDT & Predicate literals & 46 & -15.187 & 72.000 & 0.000 & 0.000 & -19.710 & -10.872 \\
+SmartCertified vs CALS-MDT & Mean AXp length & 46 & -1.207 & 146.000 & 0.000 & 0.000 & -1.635 & -0.768 \\
+SmartCertified vs CALS-MDT & Fit time (seconds) & 46 & 8.164 & 46.000 & 0.000 & 0.000 & 5.609 & 11.062 \\
+SmartCertified vs CompactExplain & Accuracy & 46 & 0.001 & 525.000 & 0.871 & 0.871 & -0.004 & 0.005 \\
+SmartCertified vs CompactExplain & Tree nodes & 46 & -39.565 & 0.000 & 0.000 & 0.000 & -49.046 & -30.989 \\
+SmartCertified vs CompactExplain & Predicate literals & 46 & -17.337 & 95.000 & 0.000 & 0.000 & -23.148 & -11.750 \\
+SmartCertified vs CompactExplain & Mean AXp length & 46 & -1.463 & 139.000 & 0.000 & 0.000 & -1.962 & -0.957 \\
+SmartCertified vs CompactExplain & Fit time (seconds) & 46 & 2.131 & 122.000 & 0.000 & 0.000 & 1.132 & 3.300 \\
+CALS-MDT vs CompactExplain & Accuracy & 46 & -0.005 & 242.000 & 0.002 & 0.011 & -0.007 & -0.002 \\
+CALS-MDT vs CompactExplain & Tree nodes & 46 & -1.607 & 443.500 & 0.404 & 0.807 & -3.511 & 0.102 \\
+CALS-MDT vs CompactExplain & Predicate literals & 46 & -2.150 & 382.500 & 0.128 & 0.383 & -4.110 & -0.317 \\
+CALS-MDT vs CompactExplain & Mean AXp length & 46 & -0.255 & 328.000 & 0.032 & 0.130 & -0.543 & 0.057 \\
+CALS-MDT vs CompactExplain & Fit time (seconds) & 46 & -6.033 & 0.000 & 0.000 & 0.000 & -7.881 & -4.331 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Cliff's delta and paired Cohen's d effect sizes.}
+\label{tab:significance-effects}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llrlrl}
+\toprule
+Comparison & Metric & Cliff's delta & Cliff magnitude & Cohen's d & d magnitude \\
+\midrule
+SmartCertified vs CALS-MDT & Accuracy & 0.034 & negligible & 0.385 & small \\
+SmartCertified vs CALS-MDT & Tree nodes & -0.863 & large & -1.411 & large \\
+SmartCertified vs CALS-MDT & Predicate literals & -0.552 & large & -0.978 & large \\
+SmartCertified vs CALS-MDT & Mean AXp length & -0.491 & large & -0.803 & large \\
+SmartCertified vs CALS-MDT & Fit time (seconds) & 0.871 & large & 0.845 & large \\
+SmartCertified vs CompactExplain & Accuracy & 0.000 & negligible & 0.041 & negligible \\
+SmartCertified vs CompactExplain & Tree nodes & -0.910 & large & -1.254 & large \\
+SmartCertified vs CompactExplain & Predicate literals & -0.647 & large & -0.866 & large \\
+SmartCertified vs CompactExplain & Mean AXp length & -0.617 & large & -0.821 & large \\
+SmartCertified vs CompactExplain & Fit time (seconds) & 0.698 & large & 0.568 & medium \\
+CALS-MDT vs CompactExplain & Accuracy & -0.032 & negligible & -0.523 & medium \\
+CALS-MDT vs CompactExplain & Tree nodes & -0.105 & negligible & -0.253 & small \\
+CALS-MDT vs CompactExplain & Predicate literals & -0.138 & negligible & -0.328 & small \\
+CALS-MDT vs CompactExplain & Mean AXp length & -0.125 & negligible & -0.243 & small \\
+CALS-MDT vs CompactExplain & Fit time (seconds) & -0.496 & large & -0.965 & large \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

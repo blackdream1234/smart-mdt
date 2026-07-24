@@ -1,3 +1,6 @@
-# CGS-MDT benchmark results
+# Historical CGS-MDT smoke results
 
-The theorem table is filtered to Unary, Horn, AntiHorn and Square2CNF with certified backends only.
+This five-row legacy smoke output predates the final correctness audit. It is
+retained for development history only and is not publication or freeze
+evidence. The theorem table reflects the certified methods available when the
+smoke run was created.

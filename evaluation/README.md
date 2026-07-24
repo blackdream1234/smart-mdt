@@ -38,7 +38,7 @@ Run from the repository root:
 
 ```text
 python -m evaluation.report \
-  --input rust_results_all_methods_final
+  --input <benchmark-output-directory>
 ```
 
 After editable installation, the command can also be run from `smart-mdt-rs`
@@ -46,19 +46,24 @@ with the benchmark folder addressed exactly as produced by the Rust CLI:
 
 ```text
 python -m evaluation.report \
-  --input ../rust_results_all_methods_final
+  --input ../<benchmark-output-directory>
 ```
 
 The default output root is `evaluation/`. To keep generated material elsewhere:
 
 ```text
 python -m evaluation.report \
-  --input ../rust_results_all_methods_final \
+  --input ../<benchmark-output-directory> \
   --output ../paper_evaluation \
   --bootstrap-resamples 10000 \
   --seed 20260718 \
   --confidence-level 0.95
 ```
+
+The authoritative freeze input and output paths are recorded in
+`smart-mdt-rs/docs/FINAL_FREEZE_REPORT.md`. Historical folders such as
+`rust_results_all_methods_final` predate the final AXp corrections and are not
+publication evidence.
 
 The base seed is deterministically split by comparison and metric, so adding a
 new comparison does not change existing bootstrap streams.

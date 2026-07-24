@@ -7,8 +7,13 @@ reproducible research tooling.
 - Automated thesis and publication evaluation:
   [`evaluation/README.md`](evaluation/README.md)
 
-Generate the complete evaluation from an existing benchmark folder:
+The current freeze decision and authoritative artifact paths are recorded in
+[`smart-mdt-rs/docs/FINAL_FREEZE_REPORT.md`](smart-mdt-rs/docs/FINAL_FREEZE_REPORT.md).
+Historical folders such as `rust_results_all_methods_final` are not current
+publication evidence.
+
+Generate the complete evaluation from a freshly audited benchmark folder:
 
 ```text
-python -m evaluation.report --input rust_results_all_methods_final
+python -m evaluation.report --input <benchmark-output-directory>
 ```

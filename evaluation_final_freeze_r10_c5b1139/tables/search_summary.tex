@@ -1,0 +1,43 @@
+\begin{table}[htbp]
+\centering
+\caption{Search-selection diagnostics.}
+\label{tab:search-selection}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+Method & Rows & Greedy nodes & Lookahead nodes & B\&B active & B\&B avoided \\
+\midrule
+Unary & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+Horn & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+AntiHorn & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+Square2CNF & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+Boolean Affine/GF(2) & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+SmartCertified & 920 & 0.000 & 0.000 & 0.000 & 0.000 \\
+CALS-MDT & 920 & 34304.000 & 0.000 & 29610.000 & 0.000 \\
+CompactExplain & 920 & 24053.000 & 11604.000 & 0.000 & 27756.000 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Cache activation, candidate savings, and search time.}
+\label{tab:search-cache}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrr}
+\toprule
+Method & Cache active & Candidate savings & Cache hits & Search time (s) \\
+\midrule
+Unary & 0.000 & 0.000 & 2256713.000 & 43.420 \\
+Horn & 0.000 & 0.000 & 4417514.000 & 59.647 \\
+AntiHorn & 0.000 & 0.000 & 4367932.000 & 61.040 \\
+Square2CNF & 0.000 & 0.000 & 5111175.000 & 408.936 \\
+Boolean Affine/GF(2) & 0.000 & 0.000 & 4906929.000 & 149.459 \\
+SmartCertified & 0.000 & 0.000 & 18141420.000 & 672.113 \\
+CALS-MDT & 55196.000 & 1584533.000 & 38342310.000 & 8182.759 \\
+CompactExplain & 56805.000 & 458777.000 & 24730873.000 & 2632.005 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

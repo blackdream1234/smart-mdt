@@ -12,4 +12,4 @@ Certified support is limited to the polynomial fragments implemented and tested 
 
 Certified result tables may contain the five single-family methods plus `smart_certified` when every path passes this state transition check. Empirical affine, empirical mixed, tuned, fallback, and path-incompatible trees are excluded.
 
-The learner is greedy/heuristic and beam-limited; it is not a global optimizer. The Rust implementation is tested by unit, regression and brute-force tests, but it is not formally verified. The current non-binary weak-AXp path uses dataset-domain completions and must not be described as a full real-valued CSP proof.
+The learner is greedy/heuristic and beam-limited; it is not a global optimizer. The Rust implementation is tested by unit, regression and brute-force tests, but it is not formally verified. Theorem-mode weak-AXp checking requires a valid non-empty Boolean reference domain and dispatches to the exact Horn, AntiHorn, 2-SAT, or GF(2) path solver. Dataset-row completion is empirical-only and never receives theorem certification; no result should describe it as a full real-valued CSP proof.

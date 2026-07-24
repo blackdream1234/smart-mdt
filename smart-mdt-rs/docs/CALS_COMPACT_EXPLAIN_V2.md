@@ -1,5 +1,11 @@
 # CALS-MDT CompactExplain v2
 
+> **Historical pre-audit evidence.** The one-run measurements in this report
+> were generated before the A01/A13 AXp soundness and full-held-out-row
+> corrections. They are retained for development history only and are not
+> publication or freeze evidence. See `FINAL_FREEZE_REPORT.md` for the current
+> artifact decision.
+
 ## Scope
 
 CompactExplain v2 adds class-aware pruning, selective lookahead, conditional

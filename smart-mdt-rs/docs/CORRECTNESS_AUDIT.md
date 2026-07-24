@@ -1,5 +1,10 @@
 # Final Research Correctness Audit
 
+> **Historical audit record.** The `FREEZE BLOCKED` decision below applies to
+> the pre-regeneration artifact reviewed on 2026-07-18. Its reproducer values
+> and findings are intentionally preserved. The current artifact decision is
+> recorded in `FINAL_FREEZE_REPORT.md`.
+
 ## Executive Summary
 
 This audit reviewed the freeze candidate as a research artifact, not as an
