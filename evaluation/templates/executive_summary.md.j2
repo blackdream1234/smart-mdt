@@ -22,4 +22,6 @@ Input: `{{ input_name }}` ({{ row_count }} rows, {{ dataset_count }} datasets).
 Repeated runs and depths are averaged within each dataset. Statistical tests
 are paired over independent dataset blocks, and confidence intervals use
 {{ bootstrap_resamples }} deterministic dataset-block bootstrap resamples with seed
-{{ seed }}.
+{{ seed }}. Reported effect sizes are the paired Cohen's d, consistent with the
+paired test; the full significance table also lists the unpaired Cliff's delta as
+a distributional reference, which should not be read as a paired estimator.

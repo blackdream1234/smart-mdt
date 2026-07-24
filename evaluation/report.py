@@ -134,13 +134,19 @@ def _significant_conclusions(frame: pd.DataFrame) -> list[str]:
     for _, row in significant.head(6).iterrows():
         difference = float(row["mean_difference_right_minus_left"])
         direction = "higher" if difference > 0 else "lower"
+        # The hypothesis test and confidence interval are paired over dataset
+        # blocks, so the reported effect size must also be the paired estimator
+        # (Cohen's d). Cliff's delta is an unpaired/distributional measure and is
+        # retained only in the full significance table for reference; surfacing
+        # it here would combine a paired test with an unpaired effect label.
         conclusions.append(
             f"For {row['comparison']} on {row['metric_label']}, the right-hand "
             f"method was {direction} by {abs(difference):.4f} "
             f"(95% bootstrap CI [{row['bootstrap_ci_lower']:.4f}, "
             f"{row['bootstrap_ci_upper']:.4f}], raw p={row['p_value']:.4g}, "
             f"Holm-adjusted p={row['p_value_adjusted_holm']:.4g}, "
-            f"Cliff magnitude {row['cliffs_interpretation']})."
+            f"paired Cohen's d={float(row['cohens_d_paired']):.3f}, "
+            f"{row['cohens_interpretation']} effect)."
         )
     return conclusions
 

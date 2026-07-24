@@ -860,7 +860,7 @@ fn write_all_outputs(
     fs::write(
         output.as_ref().join("README_RESULTS.md"),
         format!(
-            "# CGS-MDT benchmark results\n\nRows: {}\n\nThe theorem table contains Unary, Horn, AntiHorn, Square2CNF, Boolean Affine/GF(2), and path-compatible SmartCertified rows with certified backends only.\n",
+            "# Smart-MDT benchmark results\n\nRows: {}\n\nThe theorem table contains Unary, Horn, AntiHorn, Square2CNF, Boolean Affine/GF(2), and path-compatible SmartCertified rows (including the CALS-MDT and CompactExplain policies) with certified backends only.\n",
             rows.len()
         ),
     )?;
