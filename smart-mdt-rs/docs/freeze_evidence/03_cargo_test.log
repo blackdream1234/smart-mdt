@@ -1,0 +1,435 @@
+   Compiling smart-mdt-rs v0.1.0 (/home/mrblackdream/Projects/RTsmart-mdt/smart-mdt-rs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.34s
+     Running unittests src/lib.rs (target/debug/deps/smart_mdt_rs-65987e6aa54356ed)
+
+running 11 tests
+test eval::benchmark::warning_tests::axp_reporting_preserves_verified_success_and_failure_counts ... ok
+test eval::benchmark::warning_tests::all_constant_warning_preserves_dataset_and_group_dimensions ... ok
+test eval::benchmark::warning_tests::csv_escaping_preserves_embedded_quotes ... ok
+test eval::benchmark::warning_tests::all_zero_axp_warning_preserves_each_dataset_key ... ok
+test explain::axp_deletion::cached_context_regression_tests::cached_context_matches_uncached_on_out_of_bounds_row ... ok
+test explain::axp_deletion::cached_context_regression_tests::cached_context_matches_uncached_in_empirical_mode ... ok
+test explain::weak_axp::cached_context_regression_tests::cached_context_matches_uncached_in_empirical_mode ... ok
+test explain::weak_axp::cached_context_regression_tests::cached_context_matches_uncached_on_non_boolean_domain_rejection ... ok
+test explain::weak_axp::cached_context_regression_tests::cached_context_matches_uncached_on_dimension_mismatch_rejection ... ok
+test explain::axp_deletion::cached_context_regression_tests::cached_context_matches_uncached_for_every_row ... ok
+test explain::weak_axp::cached_context_regression_tests::cached_context_matches_uncached_on_certified_success_and_rejection ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/smart_mdt_rs-c80202ab32906cb2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/adaptive_language.rs (target/debug/deps/adaptive_language-531f79ed45c277ea)
+
+running 5 tests
+test budgets_are_exact_deterministic_and_preserve_minimum_quotas ... ok
+test incompatible_families_receive_no_pilot_or_budget ... ok
+test retained_budget_never_expands_the_literal_construction_beam ... ok
+test adaptive_parallel_pilots_match_serial_and_record_threads ... ok
+test disabled_adaptation_reproduces_fixed_allocation_and_enabled_tree_is_certified ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/audit_affine.rs (target/debug/deps/audit_affine-57d848da0721525e)
+
+running 8 tests
+test affine_complement_flips_rhs_only ... ok
+test affine_predicate_and_complement_partition_boolean_domain_exactly ... ok
+test non_boolean_arity3_affine_is_rejected_from_theorem_certification ... ok
+test affine_generators_canonicalize_gain_ranked_feature_order ... ok
+test affine_learner_is_non_constant_certified_and_beats_majority_on_xor ... ok
+test affine_learner_produces_certified_gf2_tree_on_xor_separable_fixture ... ok
+test debug_candidates_affine_reports_guard_rejection_on_mixed_domain ... ok
+test affine_appears_only_in_certified_table_with_gf2_backend ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_certificate_boundaries.rs (target/debug/deps/audit_certificate_boundaries-5a317c4138e3db11)
+
+running 6 tests
+test duplicate_literals_do_not_change_horn_or_antihorn_satisfiability ... ok
+test malformed_sat_variable_ids_are_rejected_without_panicking ... ok
+test mismatched_certificate_metadata_triples_are_not_theorem_certified ... ok
+test malformed_structural_predicates_cannot_claim_certification ... ok
+test structural_clause_shape_uses_effective_boolean_polarity ... ok
+test gf2_certification_enforces_per_predicate_and_path_variable_limits ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_cli_validation.rs (target/debug/deps/audit_cli_validation-93d633be848a2d47)
+
+running 11 tests
+test benchmark_rejects_an_unknown_method_instead_of_silently_skipping_rows ... ok
+test missing_string_flag_value_cannot_consume_another_flag ... ok
+test quick_benchmark_rejects_ignored_experiment_selection_flags ... ok
+test cals_tuning_options_require_a_cals_method ... ok
+test full_benchmark_rejects_unused_cals_configuration ... ok
+test train_rejects_an_unknown_method_instead_of_changing_policy ... ok
+test unknown_subcommand_returns_an_explicit_error ... ok
+test unknown_cli_flag_is_rejected_instead_of_being_ignored ... ok
+test known_options_are_rejected_on_the_wrong_subcommand ... ok
+test malformed_numeric_and_enum_arguments_are_rejected ... ok
+test mutually_exclusive_boolean_pairs_are_rejected ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/audit_core.rs (target/debug/deps/audit_core-26ff97c19c4e7b7a)
+
+running 2 tests
+test bitset_dimension_mismatch_is_recoverable_error ... ok
+test bitset_operations_match_naive_vectors_for_partial_blocks ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_dataset_loader.rs (target/debug/deps/audit_dataset_loader-f2c1c45c00539aa3)
+
+running 1 test
+test dl8_loader_uses_first_column_as_label_to_avoid_label_leakage ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_debug_candidates.rs (target/debug/deps/audit_debug_candidates-0e3729145d4242a2)
+
+running 12 tests
+test horn_learner_uses_non_constant_positive_gain_split_on_toy_fixture ... ok
+test antihorn_learner_uses_non_constant_positive_gain_split_on_toy_fixture ... ok
+wrote 3 debug candidates
+test debug_candidates_command_writes_csvs ... ok
+test unary_root_candidates_include_valid_non_empty_splits ... ok
+test unknown_debug_method_is_rejected ... ok
+test unsupported_debug_node_path_is_rejected_instead_of_echoing_root_results ... ok
+test certified_toy_candidate_pools_are_not_all_rejected ... ok
+test counts_sum_to_node_samples_and_children_not_both_empty ... ok
+test square2cnf_learner_uses_non_constant_positive_gain_split_on_toy_fixture ... ok
+test antihorn_debug_candidates_on_tic_tac_toe_are_positive_gain ... ok
+test horn_debug_and_learner_candidate_generation_agree_on_tic_tac_toe_root ... ok
+test square2cnf_debug_candidates_on_tic_tac_toe_are_positive_gain ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.47s
+
+     Running tests/audit_dl8_protocol.rs (target/debug/deps/audit_dl8_protocol-624d58966ed03bc6)
+
+running 6 tests
+test inverse_label_feature_is_detected_and_rejected_by_strict_checks ... ok
+test first_column_excluded_constants_removed_and_metadata_correct ... ok
+test one_class_target_is_skipped_after_binarization ... ok
+test leakage_detection_records_feature_equal_to_label ... ok
+test python_binarization_equivalence_cases ... ok
+test raw_two_class_label_copy_is_detected_before_binarization_can_hide_it ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_explain.rs (target/debug/deps/audit_explain-74161c00d92cf940)
+
+running 10 tests
+test axp_deletion_rejects_bad_row_and_tree_scope_without_panicking ... ok
+test empirical_completion_fallback_never_claims_theorem_certification ... ok
+test non_boolean_affine_reference_cannot_produce_a_verified_explanation ... ok
+test theorem_check_rejects_a_non_boolean_domain_even_for_a_boolean_query_row ... ok
+test deletion_returns_subset_minimal_known_axp ... ok
+test out_of_bounds_tree_scope_is_rejected_without_prediction_panic ... ok
+test weak_axp_rejects_malformed_empirical_inputs_without_panicking ... ok
+test certified_path_blocking_handles_more_than_twenty_boolean_features ... ok
+test weak_axp_matches_bruteforce_completions_for_binary_tree ... ok
+test certified_path_solvers_match_exhaustive_boolean_completion_randomly ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/audit_fuzz_inputs.rs (target/debug/deps/audit_fuzz_inputs-b5e0d91efbc5ea9f)
+
+running 2 tests
+test empty_zero_feature_and_very_deep_requests_are_safe ... ok
+test randomized_corner_datasets_never_panic_and_preserve_tree_invariants ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/audit_predicate_complement.rs (target/debug/deps/audit_predicate_complement-516329bbdd397a60)
+
+running 3 tests
+test complement_cnf_is_exact_for_certified_predicates_on_boolean_domain ... ok
+test affine_is_empirical_not_certified ... ok
+test predicate_masks_match_naive_for_polarities_and_families ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/audit_sat.rs (target/debug/deps/audit_sat-95ea20c8d6db35ba)
+
+running 4 tests
+test sat_edge_cases ... ok
+test gf2_gaussian_matches_bruteforce_on_random_systems ... ok
+test gf2_gaussian_matches_bruteforce_with_random_assumptions ... ok
+test random_horn_antihorn_and_two_sat_match_bruteforce ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/audit_tree_benchmark.rs (target/debug/deps/audit_tree_benchmark-f524223011c830f7)
+
+running 5 tests
+test cals_theorem_filter_requires_the_complete_audit_boundary ... ok
+test theorem_mode_rejects_empirical_and_tuned_policies ... ok
+test theorem_filter_requires_allowed_backend_and_method ... ok
+test learner_handles_or_and_and_seed_determinism ... ok
+test quick_benchmark_writes_required_deterministic_outputs ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/audit_tree_serialization.rs (target/debug/deps/audit_tree_serialization-ee7cf996d0193c31)
+
+running 2 tests
+test malformed_json_returns_a_recoverable_error ... ok
+test every_predicate_family_round_trips_as_json_without_prediction_changes ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/axp_reranking.rs (target/debug/deps/axp_reranking-1c58069df5260c6f)
+
+running 4 tests
+test deterministic_sampling_and_timeout_retain_original_scores ... ok
+test materially_better_predictive_candidate_is_not_hidden_with_small_weights ... ok
+test lower_axp_candidate_wins_equal_predictive_shortlist_with_certified_metadata ... ok
+test enabled_learner_reranks_only_certified_candidates ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/branch_and_bound.rs (target/debug/deps/branch_and_bound-2699028eab09e78f)
+
+running 3 tests
+test bounded_search_is_deterministic_and_fallback_is_exact ... ok
+test exact_bounded_top_k_matches_exhaustive_for_all_families ... ok
+test learner_tree_is_identical_with_exact_bound_enabled ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/brute_force_equivalence.rs (target/debug/deps/brute_force_equivalence-6f161de6e7f2ec24)
+
+running 1 test
+test bitset_mask_matches_naive ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cache_memoization.rs (target/debug/deps/cache_memoization-6b8b8f07a80d662c)
+
+running 3 tests
+test state_key_includes_theory_depth_budget_and_full_config_identity ... ok
+test all_cache_levels_hit_on_repeated_subproblems_without_cross_dataset_reuse ... ok
+test cache_on_off_and_eviction_preserve_deterministic_tree ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/compact_explain_cli.rs (target/debug/deps/compact_explain_cli-829accff413ede8f)
+
+running 3 tests
+test compact_profile_is_serial_selective_and_class_aware ... ok
+wrote verified_explanation.json and human_explanation.txt
+test explain_cli_writes_verified_json_and_text_derived_from_it ... ok
+test compact_benchmark_row_is_theorem_admissible_and_reports_class_metrics ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/conditional_search.rs (target/debug/deps/conditional_search-46117c3d3181574e)
+
+running 3 tests
+test greedy_search_does_not_activate_candidate_cache_without_expected_reuse ... ok
+test conditional_search_activates_bounded_selection_and_reuse_cache ... ok
+test high_threshold_avoids_branch_and_bound_without_changing_tree ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/cost_complexity_pruning.rs (target/debug/deps/cost_complexity_pruning-cae784065fa84f61)
+
+running 10 tests
+test deterministic_stratified_validation_split_has_no_overlap ... ok
+test invalid_pruning_fraction_is_rejected_instead_of_silently_disabling_pruning ... ok
+test balanced_validation_rejects_constant_root ... ok
+test disabled_class_aware_mode_reproduces_legacy_pruning ... ok
+test pure_leaf_is_preserved_and_cart_mode_is_supported ... ok
+test highly_imbalanced_validation_allows_equivalent_constant_root ... ok
+test missing_expected_class_is_insufficient_validation_evidence ... ok
+test minority_recall_loss_blocks_pruning ... ok
+test pruning_reduces_known_overgrown_tree_without_mutating_original ... ok
+test disabled_pruning_reproduces_training_and_enabled_fit_is_certified ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/explanation_renderer.rs (target/debug/deps/explanation_renderer-9346f31118f69608)
+
+running 3 tests
+test clinical_mode_is_non_diagnostic_and_warns_on_low_support ... ok
+test renderer_uses_only_verified_json_as_input ... ok
+test all_audience_templates_are_deterministic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/final_freeze_corpus_audit.rs (target/debug/deps/final_freeze_corpus_audit-9a6bee7a94739397)
+
+running 1 test
+test final_freeze_corpus_has_46_strict_deterministic_leakage_free_datasets ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.59s
+
+     Running tests/global_beam_search.rs (target/debug/deps/global_beam_search-1bf145146d1bfaa5)
+
+running 8 tests
+test partial_tree_completion_keeps_independent_branch_theory_states ... ok
+test selective_lookahead_uses_both_selective_and_greedy_nodes_deterministically ... ok
+test greedy_respects_a_finite_total_node_budget ... ok
+test beam_respects_depth_node_and_expansion_budgets ... ok
+test disabled_selective_gate_falls_back_to_greedy_selection ... ok
+test beam_width_one_reproduces_equivalent_greedy_tree ... ok
+test timeout_and_sparse_lookahead_return_complete_certified_trees ... ok
+test global_beam_is_certified_deterministic_and_not_worse_than_greedy ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/incremental_statistics.rs (target/debug/deps/incremental_statistics-b57b96d97be737db)
+
+running 3 tests
+test repeated_predicates_hit_the_mask_cache_and_report_avoided_work ... ok
+test incremental_statistics_match_naive_random_boolean_data ... ok
+test masked_candidate_generation_matches_naive_materialized_subsets ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/parallel_determinism.rs (target/debug/deps/parallel_determinism-542ea9ea86152e8b)
+
+running 3 tests
+test serial_and_parallel_candidate_lists_are_identical ... ok
+test cache_and_parallel_toggles_preserve_the_selected_model ... ok
+test one_two_four_and_default_threads_select_identical_trees_and_metadata ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/path_theory_state.rs (target/debug/deps/path_theory_state-6caf5df67d36151f)
+
+running 12 tests
+test affine_then_boolean_affine_is_valid ... ok
+test horn_then_affine_is_rejected ... ok
+test horn_then_horn_is_valid ... ok
+test horn_then_antihorn_is_rejected ... ok
+test theorem_reporting_admits_smart_certified_only_after_path_validation ... ok
+test unary_then_affine_is_valid ... ok
+test unary_then_horn_is_valid ... ok
+test two_sat_then_square2cnf_is_valid ... ok
+test unary_branches_may_commit_independently ... ok
+test smart_certified_benchmark_emits_path_metadata_and_enters_theorem_table ... ok
+test theorem_mode_rejects_a_greedy_per_node_tree_with_an_incompatible_path ... ok
+test every_smart_certified_learned_path_is_compatible ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/post_selection_axp.rs (target/debug/deps/post_selection_axp-4dbb26e341f88af6)
+
+running 2 tests
+test dataset_axp_metric_includes_rows_after_the_eighth_prefix ... ok
+test default_workflow_extracts_axps_only_after_final_tree_selection ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/regression_theorem_boundary.rs (target/debug/deps/regression_theorem_boundary-bd07d3e09eea7bb2)
+
+running 1 test
+test theorem_table_excludes_forbidden ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/split_scoring.rs (target/debug/deps/split_scoring-74fa358568dd7d20)
+
+running 4 tests
+test score_is_deterministic_and_components_sum_exactly ... ok
+test information_gain_profile_reproduces_historical_ranking ... ok
+test incompatible_and_zero_child_candidates_are_rejected_before_scoring ... ok
+test configured_epsilon_prefers_simpler_predicate_but_not_over_material_gain ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unified_cals.rs (target/debug/deps/unified_cals-cb368a8e9d26deb8)
+
+running 4 tests
+test thesis_profile_enables_the_complete_certified_pipeline ... ok
+test cli_accepts_cals_method_and_required_flags ... ok
+test cals_benchmark_method_is_theorem_admissible ... ok
+test unified_cals_config_trains_a_deterministic_certified_tree ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/unit_explain.rs (target/debug/deps/unit_explain-563ec604b8e0f439)
+
+running 1 test
+test axp_deletion_runs ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unit_logic.rs (target/debug/deps/unit_logic-563e625361e08264)
+
+running 1 test
+test literal_and_square_complement ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unit_sat.rs (target/debug/deps/unit_sat-674f9eff578c6862)
+
+running 5 tests
+test gf2_assumptions_are_handled ... ok
+test gf2_duplicate_variables_cancel_modulo_two ... ok
+test contradiction_cases ... ok
+test gf2_inconsistent_system_is_unsat ... ok
+test sat_backends_match_bruteforce ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unit_search.rs (target/debug/deps/unit_search-be16fbfe29f793bc)
+
+running 1 test
+test candidate_generation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/unit_tree.rs (target/debug/deps/unit_tree-f060e15e504740d9)
+
+running 1 test
+test tree_prediction_deterministic ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/verified_explanation.rs (target/debug/deps/verified_explanation-85ba2aca4e26bf11)
+
+running 3 tests
+test affine_parity_wording_is_explicit_and_certified ... ok
+test horn_antihorn_and_two_cnf_wording_is_unambiguous ... ok
+test verified_json_round_trip_preserves_thresholds_and_axp_scope ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running benches/axp_extraction.rs (target/debug/deps/axp_extraction-3e394e5eda9b6da4)
+AXp extraction: 315.122µs last=[0, 1, 2, 3]
+     Running benches/sat_backends.rs (target/debug/deps/sat_backends-57ce7598b223c2f0)
+SAT backend horn: 33.405672ms last=true
+SAT backend antihorn: 40.824213ms last=true
+SAT backend two_sat: 25.010491ms last=true
+     Running benches/split_search.rs (target/debug/deps/split_search-6f164d582cfbb080)
+safe bitset-like mask evaluation: 16.44µs count=256
+naive row evaluation: 9.85µs count=256
+candidate search unary: 445.673µs candidates=8
+candidate search horn: 29ns candidates=84
+candidate search antihorn: 30ns candidates=84
+candidate search square2cnf: 38ns candidates=6232
+serial certified mask/scoring/generation: 177.968262ms candidates=6576
+parallel certified mask/scoring/generation: 581.850124ms candidates=6576
+Greedy training: 29.862379ms nodes=3
+GlobalBeam training: 85.586727ms nodes=3
+     Running unittests examples/explain_one_instance.rs (target/debug/examples/explain_one_instance-e6cf7fdeb8b0d288)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests examples/train_car.rs (target/debug/examples/train_car-554d47a526cbfe71)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

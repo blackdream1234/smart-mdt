@@ -1,0 +1,55 @@
+independent leakage verifier over 46 .dl8 files in data
+dataset                            n  feat  raw  bin  comp
+HTRU_2-bin                     17898    70    0    0     0
+IndiansDiabetes-bin              768    40    0    0     0
+Statlog_satellite-bin           4435   531    0    0     0
+adult_discretized              30299    59    0    0     0
+anneal                           812    88    0    0     0
+audiology                        216   145    0    0     0
+australian-credit                653   124    0    0     0
+balance-scale-bin                625    16    0    0     0
+bank_conv-bin                   4521   211    0    0     0
+banknote-bin                    1372    26    0    0     0
+biodeg-bin                      1055   302    0    0     0
+breast-cancer-un                 683    89    0    0     0
+breast-wisconsin                 683   120    0    0     0
+car-un                          1728    21    0    0     0
+car_evaluation-bin              1728    14    0    0     0
+compas_discretized              6167    25    0    0     0
+diabetes                         768   112    0    0     0
+forest-fires-un                  517   989    0    0     0
+german-credit                   1000   110    0    0     0
+heart-cleveland                  296    95    0    0     0
+hepatitis                        137    68    0    0     0
+hypothyroid                     3247    83    0    0     0
+ionosphere                       351   444    0    0     0
+kr-vs-kp                        3196    73    0    0     0
+letter                         20000   224    0    0     0
+letter_recognition-bin         20000   240    0    0     0
+lymph                            148    68    0    0     0
+magic04-bin                    19020    86    0    0     0
+messidor-bin                    1151    83    0    0     0
+mushroom                        8124   111    0    0     0
+pendigits                       7494   216    0    0     0
+primary-tumor                    336    31    0    0     0
+segment                         2310   234    0    0     0
+seismic_bumps-bin               2584    90    0    0     0
+soybean                          630    50    0    0     0
+splice-1                        3190   287    0    0     0
+taiwan_binarised               30000   198    0    0     0
+tic-tac-toe                      958    27    0    0     0
+titanic-un                       887   333    0    0     0
+vehicle                          846   252    0    0     0
+vote                             435    48    0    0     0
+wine1-un                         178  1276    0    0     0
+wine2-un                         178  1276    0    0     0
+wine3-un                         178  1276    0    0     0
+winequality-red-bin             1599    39    0    0     0
+yeast                           1484    89    0    0     0
+------------------------------------------------------------
+datasets analysed: 46
+TOTAL raw-label leakage:        0
+TOTAL binarized-label leakage:  0
+TOTAL complement leakage:       0
+
+PASS: zero raw / binarized / complement leakage
