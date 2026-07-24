@@ -1,10 +1,6 @@
 //! AXp extraction that is intentionally restricted to the selected final tree.
 
-use super::{
-    axp_deletion::extract_axp_deletion_with_context,
-    weak_axp::{weak_axp_check_with_context, AxpCheckContext},
-    AxpResult,
-};
+use super::{extract_axp_deletion, weak_axp_check, AxpResult};
 use crate::{
     data::ColumnMajorMatrix,
     tree::{predict_row, tree_is_certified, TreeNode},
@@ -22,14 +18,6 @@ pub struct FinalTreeAxpSummary {
 }
 
 /// Extracts AXps only from `tree`, which callers must already have finalized.
-///
-/// Builds a single [`AxpCheckContext`] for the whole call (one tree, one
-/// reference domain) instead of letting it be rebuilt per row or per
-/// feature-deletion trial. See `weak_axp_check_with_context`'s docs for why
-/// this matters: without it, the domain-Boolean check alone was rescanning
-/// the full held-out row set on effectively every weak-AXp check, which
-/// dominated (>99%) measured AXp-extraction time for full-corpus benchmarks.
-/// Output is unchanged; only redundant recomputation is removed.
 pub fn extract_final_tree_axps(
     tree: &TreeNode,
     features: &ColumnMajorMatrix,
@@ -37,9 +25,8 @@ pub fn extract_final_tree_axps(
     theorem_mode: bool,
 ) -> FinalTreeAxpSummary {
     let row_count = features.rows().min(maximum_rows);
-    let ctx = AxpCheckContext::new(tree, features, theorem_mode);
     let results = (0..row_count)
-        .map(|row| extract_axp_deletion_with_context(&ctx, tree, features, row, theorem_mode))
+        .map(|row| extract_axp_deletion(tree, features, row, theorem_mode))
         .collect::<Vec<_>>();
     let total = results
         .iter()
@@ -58,8 +45,7 @@ pub fn extract_final_tree_axps(
                 .map(|feature| features.get(row, feature as u32))
                 .collect::<Vec<_>>();
             let target = predict_row(tree, features, row);
-            let sufficient = weak_axp_check_with_context(
-                &ctx,
+            let sufficient = weak_axp_check(
                 tree,
                 features,
                 &instance,
@@ -76,16 +62,8 @@ pub fn extract_final_tree_axps(
                         .copied()
                         .filter(|feature| feature != removed)
                         .collect::<Vec<_>>();
-                    !weak_axp_check_with_context(
-                        &ctx,
-                        tree,
-                        features,
-                        &instance,
-                        target,
-                        &subset,
-                        theorem_mode,
-                    )
-                    .is_weak_axp
+                    !weak_axp_check(tree, features, &instance, target, &subset, theorem_mode)
+                        .is_weak_axp
                 });
             (valid, minimal)
         })
