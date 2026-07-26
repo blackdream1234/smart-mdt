@@ -65,14 +65,24 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         max_depth_reached: 0,
         mean_axp_length: 0.0,
         axp_time: 0.0,
+        axp_extraction_stage: "post_selection_final_tree".into(),
+        final_axp_rows: 2,
+        test_rows: 2,
+        axp_valid_count: 2,
+        axp_minimal_count: 2,
         theorem_certified: true,
         language_family: LanguageFamily::Unary,
         backend: Backend::StructuralHorn,
+        path_theory_state: "uncommitted".into(),
+        path_backend: "StructuralHorn".into(),
+        path_certified: true,
+        all_predicates_backend_allowed: true,
         git_sha: "abc".into(),
         config: "seed=1".into(),
         random_state: 1,
         n_runs: 1,
         train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
+        ..ResultRow::default()
     };
     assert!(theorem_table_filter(&base));
     assert!(!theorem_table_filter(&ResultRow {
@@ -85,12 +95,89 @@ fn theorem_filter_requires_allowed_backend_and_method() {
         ..base.clone()
     }));
     assert!(!theorem_table_filter(&ResultRow {
+        language_family: LanguageFamily::Horn,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_certified: false,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_theory_state: "horn".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_backend: "TwoSat".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        all_predicates_backend_allowed: false,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        axp_extraction_stage: "provisional_candidate".into(),
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        final_axp_rows: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        axp_valid_count: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        axp_minimal_count: 1,
+        ..base.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
         method: "tuned-experimental".into(),
         ..base.clone()
     }));
     assert!(!theorem_table_filter(&ResultRow {
         method: "best-certified".into(),
         ..base
+    }));
+}
+
+#[test]
+fn cals_theorem_filter_requires_the_complete_audit_boundary() {
+    let admitted = ResultRow {
+        method: "cals".into(),
+        theorem_certified: true,
+        language_family: LanguageFamily::SmartCertified,
+        backend: Backend::PathCertified,
+        path_certified: true,
+        path_theory_state: "horn|affine_gf2".into(),
+        path_backend: "StructuralHorn|Gf2Gaussian".into(),
+        all_predicates_backend_allowed: true,
+        axp_extraction_stage: "post_selection_final_tree".into(),
+        final_axp_rows: 2,
+        test_rows: 2,
+        axp_valid_count: 2,
+        axp_minimal_count: 2,
+        ..ResultRow::default()
+    };
+    assert!(theorem_table_filter(&admitted));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_violation_count: 1,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        empirical_fallback_used: true,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        incompatible_cached_subtree_reused: true,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        all_predicates_backend_allowed: false,
+        ..admitted.clone()
+    }));
+    assert!(!theorem_table_filter(&ResultRow {
+        path_backend: "Affine".into(),
+        ..admitted
     }));
 }
 

@@ -17,16 +17,39 @@ fn theorem_table_excludes_forbidden() {
         max_depth_reached: 0,
         mean_axp_length: 0.0,
         axp_time: 0.0,
+        axp_extraction_stage: "post_selection_final_tree".into(),
+        final_axp_rows: 2,
+        test_rows: 2,
+        axp_valid_count: 2,
+        axp_minimal_count: 2,
         theorem_certified: true,
         language_family: LanguageFamily::Horn,
         backend: Backend::StructuralHorn,
+        path_theory_state: "horn".into(),
+        path_backend: "StructuralHorn".into(),
+        path_certified: true,
+        all_predicates_backend_allowed: true,
         git_sha: "x".into(),
         config: "{}".into(),
         random_state: 1,
         n_runs: 1,
         train_test_split_protocol: "deterministic_hash_70_30_first_label".into(),
+        ..ResultRow::default()
     };
     assert!(theorem_table_filter(&good));
+
+    // Certified Boolean affine with the GF(2) backend is admitted.
+    let certified_affine = ResultRow {
+        method: "affine".into(),
+        language_family: LanguageFamily::Affine,
+        backend: Backend::Gf2Gaussian,
+        path_theory_state: "affine_gf2".into(),
+        path_backend: "Gf2Gaussian".into(),
+        ..good.clone()
+    };
+    assert!(theorem_table_filter(&certified_affine));
+
+    // Empirical affine (family EmpiricalAffine, backend Affine) is excluded.
     let bad = ResultRow {
         method: "affine".into(),
         language_family: LanguageFamily::EmpiricalAffine,
@@ -34,6 +57,16 @@ fn theorem_table_excludes_forbidden() {
         ..good.clone()
     };
     assert!(!theorem_table_filter(&bad));
+
+    // Affine is admitted ONLY with the GF(2) backend: a non-GF(2) backend fails.
+    let affine_wrong_backend = ResultRow {
+        method: "affine".into(),
+        language_family: LanguageFamily::Affine,
+        backend: Backend::TwoSat,
+        ..good.clone()
+    };
+    assert!(!theorem_table_filter(&affine_wrong_backend));
+
     let bad2 = ResultRow {
         method: "bestpn".into(),
         ..good

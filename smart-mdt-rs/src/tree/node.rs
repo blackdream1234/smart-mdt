@@ -35,4 +35,16 @@ impl TreeNode {
             Self::Internal { left, right, .. } => 1 + left.depth().max(right.depth()),
         }
     }
+    /// Total predicate literals across internal nodes.
+    pub fn literals(&self) -> usize {
+        match self {
+            Self::Leaf { .. } => 0,
+            Self::Internal {
+                predicate,
+                left,
+                right,
+                ..
+            } => predicate.arity() + left.literals() + right.literals(),
+        }
+    }
 }

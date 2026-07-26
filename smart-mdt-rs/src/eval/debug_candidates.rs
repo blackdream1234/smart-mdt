@@ -1,12 +1,19 @@
 //! Candidate-generation diagnostics for Python-parity debugging.
 use crate::{
-    data::{class_counts, load_dl8_with_metadata, predicate_mask, Dataset},
-    logic::{Literal, Predicate, ThresholdAtom, ThresholdOp},
+    data::{
+        class_counts, load_dl8_with_metadata, predicate_mask, predicate_scope_is_boolean, Dataset,
+    },
+    logic::{next_theory_state, Literal, PathTheoryState, Predicate, ThresholdAtom, ThresholdOp},
+    search::affine::{generate_affine, AffineConfig},
     search::antihorn::generate_antihorn,
     search::horn::generate_horn,
-    search::scoring::{final_score, gini, information_gain, CandidateScore, ScoreWeights},
+    search::scoring::{
+        canonical_predicate_key, gini, information_gain, score_split, CandidateScore,
+        SplitScoreConfig, SplitScoreInput,
+    },
     search::square2cnf::generate_square2cnf,
-    Result, SmartMdtError,
+    search::unary::generate_unary,
+    FeatureId, Result, SmartMdtError,
 };
 use std::{
     fs,
@@ -40,12 +47,31 @@ struct CandidateDiagnostic {
     impurity_true: f64,
     impurity_false: f64,
     balance: f64,
+    boolean_scope: bool,
+    theorem_certified: bool,
+    path_theory_state: String,
+    path_backend: String,
+    path_certified: bool,
     rejected: bool,
     rejected_reason: String,
 }
 
 /// Runs root candidate diagnostics and writes `debug_candidates.csv` plus masks for top 5.
 pub fn run_debug_candidates(cfg: &DebugCandidateConfig) -> Result<Vec<String>> {
+    if cfg.depth != 0 || cfg.node_path != "root" {
+        return Err(SmartMdtError::InvalidInput(
+            "debug-candidates currently supports only --depth 0 --node-path root".into(),
+        ));
+    }
+    if !matches!(
+        cfg.method.as_str(),
+        "unary" | "horn" | "antihorn" | "square2cnf" | "affine" | "smart_certified"
+    ) {
+        return Err(SmartMdtError::InvalidInput(format!(
+            "unknown certified method {}",
+            cfg.method
+        )));
+    }
     fs::create_dir_all(&cfg.output)?;
     let path = find_dataset_path(&cfg.data_dir, &cfg.dataset)?;
     let loaded = load_dl8_with_metadata(&path)?;
@@ -121,6 +147,25 @@ fn generate_diagnostics(
                 .map(|c| score_predicate(ds, c.predicate))
                 .collect();
         }
+        "affine" => {
+            return affine_debug_predicates(ds, beam_width, AffineConfig::default())
+                .into_iter()
+                .take(cap)
+                .map(|p| score_predicate(ds, p))
+                .collect();
+        }
+        "smart_certified" => {
+            let mut candidates = generate_unary(ds, 1);
+            candidates.extend(generate_horn(ds, 1, beam_width));
+            candidates.extend(generate_antihorn(ds, 1, beam_width));
+            candidates.extend(generate_square2cnf(ds, 1, beam_width));
+            candidates.extend(generate_affine(ds, 1, beam_width));
+            return candidates
+                .into_iter()
+                .take(cap)
+                .map(|c| score_predicate(ds, c.predicate))
+                .collect();
+        }
         _ => {}
     }
     predicates
@@ -128,6 +173,75 @@ fn generate_diagnostics(
         .take(cap)
         .map(|p| score_predicate(ds, p))
         .collect()
+}
+
+/// Builds affine debug predicates over all features (including non-Boolean ones,
+/// so that Boolean-scope rejections are visible in the diagnostics), ranking
+/// features by unary gain and enumerating XOR combinations up to `max_arity`.
+fn affine_debug_predicates(ds: &Dataset, beam: usize, cfg: AffineConfig) -> Vec<Predicate> {
+    let features = ranked_features_for_affine(ds);
+    let pool: Vec<FeatureId> = features
+        .into_iter()
+        .take(beam.max(cfg.max_arity).max(2))
+        .collect();
+    let max_arity = cfg.max_arity.clamp(2, 4);
+    let mut out = Vec::new();
+    for k in 2..=max_arity {
+        for combo in affine_combinations(pool.len(), k) {
+            let literals: Vec<Literal> = combo.iter().map(|&i| affine_literal(pool[i])).collect();
+            for rhs in [false, true] {
+                out.push(Predicate::Affine {
+                    literals: literals.clone(),
+                    rhs,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn affine_literal(feature: FeatureId) -> Literal {
+    Literal {
+        atom: ThresholdAtom {
+            feature,
+            threshold_id: 0,
+            threshold: 0.5,
+            op: ThresholdOp::GreaterEqual,
+        },
+        positive: true,
+    }
+}
+
+fn ranked_features_for_affine(ds: &Dataset) -> Vec<FeatureId> {
+    let mut features: Vec<FeatureId> = (0..ds.features.cols() as FeatureId).collect();
+    features.sort_by(|&a, &b| {
+        let ga = literal_gain(ds, &affine_literal(b));
+        let gb = literal_gain(ds, &affine_literal(a));
+        ga.total_cmp(&gb).then(a.cmp(&b))
+    });
+    features
+}
+
+fn affine_combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    if k == 0 || k > n {
+        return out;
+    }
+    let mut idx: Vec<usize> = (0..k).collect();
+    loop {
+        out.push(idx.clone());
+        let mut i = k - 1;
+        while idx[i] == i + n - k {
+            if i == 0 {
+                return out;
+            }
+            i -= 1;
+        }
+        idx[i] += 1;
+        for j in i + 1..k {
+            idx[j] = idx[j - 1] + 1;
+        }
+    }
 }
 
 fn ranked_literals(ds: &Dataset) -> Vec<Literal> {
@@ -180,23 +294,58 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
         .map(|(a, b)| a - b)
         .collect();
     let gain = information_gain(&parent, &true_counts, &false_counts);
-    let rejected = true_count == 0 || false_count == 0;
+    // The Boolean-domain guard: affine may only be theorem-certified when every
+    // feature in its scope is Boolean over the loaded domain.
+    let is_affine = matches!(predicate, Predicate::Affine { .. });
+    let boolean_scope = predicate_scope_is_boolean(&ds.features, &predicate);
+    let base_cert = predicate.certificate(true).theorem_certified;
+    let theorem_certified = base_cert && (!is_affine || boolean_scope);
+    let next_state = next_theory_state(PathTheoryState::Uncommitted, &predicate).ok();
+    let path_theory_state = next_state
+        .map(|state| state.as_str().to_string())
+        .unwrap_or_else(|| "incompatible".into());
+    let path_backend = next_state
+        .map(|state| format!("{:?}", state.backend()))
+        .unwrap_or_else(|| "Unsupported".into());
+    let path_certified = theorem_certified && next_state.is_some();
+    let degenerate = true_count == 0 || false_count == 0;
+    let guard_rejected = is_affine && !boolean_scope;
+    let rejected = degenerate || guard_rejected;
     let rejected_reason = if true_count == 0 {
         "empty_true_child"
     } else if false_count == 0 {
         "empty_false_child"
+    } else if guard_rejected {
+        "non_boolean_scope"
     } else {
         ""
     }
     .to_string();
-    let cert = predicate.certificate(true).theorem_certified;
-    let score = final_score(
-        gain,
-        predicate.arity() as f64,
-        0.0,
-        0.0,
-        cert,
-        ScoreWeights::default(),
+    let impurity_true = gini(&true_counts);
+    let impurity_false = gini(&false_counts);
+    let total = true_count + false_count;
+    let fragmentation = if total == 0 {
+        1.0
+    } else {
+        1.0 - 2.0 * true_count.min(false_count) as f64 / total as f64
+    };
+    let estimated_subtree_cost = if total == 0 {
+        0.0
+    } else {
+        (true_count as f64 * impurity_true + false_count as f64 * impurity_false) / total as f64
+    };
+    let score = score_split(
+        SplitScoreInput {
+            information_gain: gain,
+            true_count,
+            false_count,
+            literal_count: predicate.arity(),
+            family: predicate.language(),
+            fragmentation,
+            estimated_subtree_cost,
+            instability: fragmentation,
+        },
+        &SplitScoreConfig::default(),
     );
     CandidateDiagnostic {
         predicate,
@@ -206,15 +355,14 @@ fn score_predicate(ds: &Dataset, predicate: Predicate) -> CandidateDiagnostic {
         true_counts,
         false_counts,
         impurity_parent: gini(&parent),
-        impurity_true: gini(&class_counts(&ds.labels, &mask, classes)),
-        impurity_false: gini(
-            &parent
-                .iter()
-                .zip(class_counts(&ds.labels, &mask, classes))
-                .map(|(a, b)| a - b)
-                .collect::<Vec<_>>(),
-        ),
+        impurity_true,
+        impurity_false,
         balance: true_count.min(false_count) as f64 / ds.labels.len().max(1) as f64,
+        boolean_scope,
+        theorem_certified,
+        path_theory_state,
+        path_backend,
+        path_certified,
         rejected,
         rejected_reason,
     }
@@ -225,17 +373,57 @@ fn write_candidates_csv(
     ds: &Dataset,
     candidates: &[CandidateDiagnostic],
 ) -> Result<()> {
-    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,final_score,rejected,rejected_reason\n");
+    let mut out = String::from("dataset,method,depth,node_path,n_node_samples,node_class_counts,candidate_rank,candidate_id,predicate_debug,language_family,backend,theorem_certified,path_theory_state,path_backend,path_certified,true_count,false_count,true_class_counts,false_class_counts,impurity_parent,impurity_true,impurity_false,impurity_gain,balance,complexity,raw_score,certificate_bonus,score_profile,information_gain,gain_ratio,balance_component,literal_penalty,family_penalty,fragmentation_penalty,estimated_subtree_penalty,instability_penalty,final_score,canonical_tie_break_key,rejected,rejected_reason,arity,rhs,boolean_scope\n");
     let node_counts = counts_string(&ds.labels.iter().map(|&x| x as usize).collect::<Vec<_>>());
     for (rank, c) in candidates.iter().enumerate() {
-        let meta = c.predicate.certificate(true);
         let candidate_id = format!("cand_{}", rank + 1);
-        out.push_str(&format!("{},{},{},{},{},{},{},{},{},{:?},{:?},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-            csv(&cfg.dataset), cfg.method, cfg.depth, csv(&cfg.node_path), ds.labels.len(), csv(&node_counts), rank + 1,
-            candidate_id, csv(&predicate_debug(&c.predicate)), c.predicate.language(), c.predicate.backend(), meta.theorem_certified,
-            c.true_count, c.false_count, csv(&usize_counts(&c.true_counts)), csv(&usize_counts(&c.false_counts)), c.impurity_parent,
-            c.impurity_true, c.impurity_false, c.score.predictive_gain, c.balance, c.predicate.arity(), c.score.predictive_gain,
-            c.score.certificate_bonus, c.score.final_score, c.rejected, csv(&c.rejected_reason)));
+        let fields = vec![
+            csv(&cfg.dataset),
+            cfg.method.clone(),
+            cfg.depth.to_string(),
+            csv(&cfg.node_path),
+            ds.labels.len().to_string(),
+            csv(&node_counts),
+            (rank + 1).to_string(),
+            candidate_id,
+            csv(&predicate_debug(&c.predicate)),
+            format!("{:?}", c.predicate.language()),
+            format!("{:?}", c.predicate.backend()),
+            c.theorem_certified.to_string(),
+            c.path_theory_state.clone(),
+            c.path_backend.clone(),
+            c.path_certified.to_string(),
+            c.true_count.to_string(),
+            c.false_count.to_string(),
+            csv(&usize_counts(&c.true_counts)),
+            csv(&usize_counts(&c.false_counts)),
+            c.impurity_parent.to_string(),
+            c.impurity_true.to_string(),
+            c.impurity_false.to_string(),
+            c.score.predictive_gain.to_string(),
+            c.balance.to_string(),
+            c.predicate.arity().to_string(),
+            c.score.predictive_gain.to_string(),
+            c.score.certificate_bonus.to_string(),
+            format!("{:?}", c.score.score_profile),
+            c.score.predictive_gain.to_string(),
+            c.score.gain_ratio.to_string(),
+            c.score.balance_component.to_string(),
+            c.score.literal_penalty.to_string(),
+            c.score.family_penalty.to_string(),
+            c.score.fragmentation_penalty.to_string(),
+            c.score.estimated_subtree_penalty.to_string(),
+            c.score.instability_penalty.to_string(),
+            c.score.final_score.to_string(),
+            csv(&canonical_predicate_key(&c.predicate)),
+            c.rejected.to_string(),
+            csv(&c.rejected_reason),
+            c.predicate.arity().to_string(),
+            affine_rhs_str(&c.predicate),
+            c.boolean_scope.to_string(),
+        ];
+        out.push_str(&fields.join(","));
+        out.push('\n');
     }
     fs::write(cfg.output.join("debug_candidates.csv"), out)?;
     Ok(())
@@ -268,8 +456,14 @@ fn write_masks_csv(
 fn predicate_debug(p: &Predicate) -> String {
     format!("{:?}", p).replace(',', ";")
 }
+fn affine_rhs_str(p: &Predicate) -> String {
+    match p {
+        Predicate::Affine { rhs, .. } => rhs.to_string(),
+        _ => String::new(),
+    }
+}
 fn csv(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "'"))
+    format!("\"{}\"", s.replace('"', "\"\""))
 }
 fn usize_counts(xs: &[usize]) -> String {
     xs.iter()

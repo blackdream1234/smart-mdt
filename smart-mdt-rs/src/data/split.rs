@@ -1,5 +1,14 @@
 use super::{BitSet, ColumnMajorMatrix};
-use crate::logic::Predicate;
+use crate::{logic::Predicate, FeatureId};
+/// Returns true iff every value of the feature column lies in `{0, 1}`.
+pub fn is_boolean_column(x: &ColumnMajorMatrix, feature: FeatureId) -> bool {
+    x.column(feature).iter().all(|&v| v == 0.0 || v == 1.0)
+}
+/// Returns true iff every feature in the predicate scope is Boolean over the domain.
+/// This is the guard that decides whether an affine predicate may be theorem-certified.
+pub fn predicate_scope_is_boolean(x: &ColumnMajorMatrix, p: &Predicate) -> bool {
+    p.scope_features().iter().all(|&f| is_boolean_column(x, f))
+}
 /// Computes a predicate membership mask.
 pub fn predicate_mask(x: &ColumnMajorMatrix, p: &Predicate) -> BitSet {
     let mut b = BitSet::zeros(x.rows());

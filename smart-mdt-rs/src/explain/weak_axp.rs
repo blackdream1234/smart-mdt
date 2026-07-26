@@ -1,58 +1,58 @@
-use super::WeakAxpResult;
+use super::{path_blocking::certified_opposite_completion_exists, WeakAxpResult};
 use crate::{
     data::ColumnMajorMatrix,
-    logic::{CertificateMetadata, LanguageFamily},
-    tree::{predict_row, TreeNode},
+    logic::{Backend, CertificateMetadata, LanguageFamily, PathCertificate, PathTheoryState},
+    tree::{predict_row, tree_path_theory_states, TreeNode},
     ClassId, FeatureId,
 };
 
-fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
-    fn fam(t: &TreeNode, acc: &mut Vec<LanguageFamily>) {
-        if let TreeNode::Internal {
-            predicate,
-            left,
-            right,
-            ..
-        } = t
-        {
-            acc.push(predicate.language());
-            fam(left, acc);
-            fam(right, acc);
-        }
-    }
-    let mut fs = Vec::new();
-    fam(tree, &mut fs);
-    let f = fs.first().copied().unwrap_or(LanguageFamily::Unary);
-    let same = fs.iter().all(|x| *x == f);
-    let meta = match f {
-        LanguageFamily::Unary | LanguageFamily::Horn => CertificateMetadata::new(
+pub(super) fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
+    let Ok(states) = tree_path_theory_states(tree) else {
+        return CertificateMetadata::rejected(
             theorem_mode,
-            f,
-            crate::logic::Backend::StructuralHorn,
-            crate::logic::PathCertificate::HornCnf,
-        ),
-        LanguageFamily::AntiHorn => CertificateMetadata::new(
-            theorem_mode,
-            f,
-            crate::logic::Backend::StructuralAntiHorn,
-            crate::logic::PathCertificate::AntiHornCnf,
-        ),
-        LanguageFamily::Square2Cnf => CertificateMetadata::new(
-            theorem_mode,
-            f,
-            crate::logic::Backend::TwoSat,
-            crate::logic::PathCertificate::TwoCnf,
-        ),
-        _ => CertificateMetadata::rejected(theorem_mode, f, "empirical path"),
-    };
-    if theorem_mode && !same {
-        CertificateMetadata::rejected(
-            true,
             LanguageFamily::EmpiricalMixed,
-            "mixed paths are not theorem-certified",
-        )
-    } else {
-        meta
+            "incompatible theories occur on a root-to-leaf path",
+        );
+    };
+    if states.len() != 1 {
+        return CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::SmartCertified,
+            Backend::PathCertified,
+            PathCertificate::PathTheory,
+        );
+    }
+    match states[0] {
+        PathTheoryState::Uncommitted => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
+            PathCertificate::HornCnf,
+        ),
+        PathTheoryState::Horn => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Horn,
+            Backend::StructuralHorn,
+            PathCertificate::HornCnf,
+        ),
+        PathTheoryState::AntiHorn => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::AntiHorn,
+            Backend::StructuralAntiHorn,
+            PathCertificate::AntiHornCnf,
+        ),
+        PathTheoryState::TwoSat => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Square2Cnf,
+            Backend::TwoSat,
+            PathCertificate::TwoCnf,
+        ),
+        PathTheoryState::AffineGf2 => CertificateMetadata::new(
+            theorem_mode,
+            LanguageFamily::Affine,
+            Backend::Gf2Gaussian,
+            PathCertificate::AffineGf2,
+        ),
     }
 }
 
@@ -69,6 +69,35 @@ fn is_binary_instance(instance: &[f64]) -> bool {
     instance.iter().all(|v| *v == 0.0 || *v == 1.0)
 }
 
+fn is_binary_domain(domain: &ColumnMajorMatrix) -> bool {
+    domain.rows() > 0
+        && (0..domain.cols() as FeatureId).all(|feature| {
+            domain
+                .column(feature)
+                .iter()
+                .all(|v| *v == 0.0 || *v == 1.0)
+        })
+}
+
+pub(crate) fn tree_scope_fits_domain(tree: &TreeNode, feature_count: usize) -> bool {
+    match tree {
+        TreeNode::Leaf { .. } => true,
+        TreeNode::Internal {
+            predicate,
+            left,
+            right,
+            ..
+        } => {
+            predicate
+                .scope_features()
+                .iter()
+                .all(|feature| (*feature as usize) < feature_count)
+                && tree_scope_fits_domain(left, feature_count)
+                && tree_scope_fits_domain(right, feature_count)
+        }
+    }
+}
+
 fn assignment_matrix(values: &[f64]) -> Option<ColumnMajorMatrix> {
     let row = values.to_vec();
     ColumnMajorMatrix::from_rows(&[row]).ok()
@@ -76,12 +105,11 @@ fn assignment_matrix(values: &[f64]) -> Option<ColumnMajorMatrix> {
 
 /// Checks weak AXp by blocking all opposite-class leaves.
 ///
-/// For binary domains, this performs the direct finite-completion semantics: every
-/// Boolean completion agreeing with the selected features is predicted and any
-/// opposite prediction witnesses that `selected_features` is not weak. For
-/// non-binary data, it conservatively checks completions present as rows in the
-/// supplied domain matrix, which is useful for dataset-backed smoke tests but is
-/// not reported as a stronger formal guarantee.
+/// In theorem mode, every opposite leaf is blocked with the certified solver for
+/// that path's tractable Boolean theory. Non-Boolean reference domains are
+/// rejected because dataset-row enumeration is not a theorem proof. Outside
+/// theorem mode, the historical finite-completion/data-row checks remain
+/// available without a certification claim.
 pub fn weak_axp_check(
     tree: &TreeNode,
     domain: &ColumnMajorMatrix,
@@ -92,6 +120,22 @@ pub fn weak_axp_check(
 ) -> WeakAxpResult {
     let meta = backend_meta(tree, theorem_mode);
     let opposite_paths = count_opposite_leaves(tree, target_class);
+    if domain.cols() != instance.len()
+        || selected_features
+            .iter()
+            .any(|&feature| feature as usize >= instance.len())
+        || !tree_scope_fits_domain(tree, domain.cols())
+    {
+        return WeakAxpResult {
+            is_weak_axp: false,
+            metadata: CertificateMetadata::rejected(
+                theorem_mode,
+                meta.language_family,
+                "AXp checking requires matching dimensions, in-bounds selected features, and in-bounds tree scope",
+            ),
+            opposite_paths_checked: opposite_paths,
+        };
+    }
     if theorem_mode && !meta.theorem_certified {
         return WeakAxpResult {
             is_weak_axp: false,
@@ -100,8 +144,39 @@ pub fn weak_axp_check(
         };
     }
 
+    if theorem_mode {
+        if !is_binary_instance(instance) || !is_binary_domain(domain) {
+            return WeakAxpResult {
+                is_weak_axp: false,
+                metadata: CertificateMetadata::rejected(
+                    true,
+                    meta.language_family,
+                    "theorem AXp checking requires a non-empty Boolean reference domain and in-bounds tree scope",
+                ),
+                opposite_paths_checked: opposite_paths,
+            };
+        }
+        return match certified_opposite_completion_exists(
+            tree,
+            instance,
+            target_class,
+            selected_features,
+        ) {
+            Ok(has_opposite_completion) => WeakAxpResult {
+                is_weak_axp: !has_opposite_completion,
+                metadata: meta,
+                opposite_paths_checked: opposite_paths,
+            },
+            Err(reason) => WeakAxpResult {
+                is_weak_axp: false,
+                metadata: CertificateMetadata::rejected(true, meta.language_family, reason),
+                opposite_paths_checked: opposite_paths,
+            },
+        };
+    }
+
     let mut has_opposite_completion = false;
-    if is_binary_instance(instance) && instance.len() <= 20 {
+    if is_binary_domain(domain) && is_binary_instance(instance) && instance.len() <= 20 {
         let n = instance.len();
         for mask in 0..(1usize << n) {
             let mut completion = vec![0.0; n];

@@ -1,0 +1,1535 @@
+//! Incremental bitset-backed training views and candidate statistics.
+
+use super::{
+    allocate_family_budgets, AdaptiveLanguageConfig, AdaptiveLanguageDiagnostics,
+    AdaptiveNodeDiagnostics, AxpCandidateDiagnostics, AxpRerankConfig, AxpRerankDiagnostics,
+    BeamSearchDiagnostics, BestSubtreeCache, CacheConfig, CacheDiagnostics, CachedSubtree,
+    CandidatePoolCache, ConditionalSearchDiagnostics, FamilyPilotMetrics, LanguagePolicy,
+    LookaheadCache, NodeStatistics, NodeStatisticsCache, ParallelConfig, ParallelDiagnostics,
+    PruningDiagnostics, SearchStateKey,
+};
+use crate::{
+    data::{is_boolean_column, predicate_mask, BitSet, Dataset},
+    explain::extract_axp_deletion,
+    logic::{
+        candidate_is_compatible, next_theory_state, Literal, PathTheoryState, Predicate,
+        ThresholdAtom, ThresholdOp,
+    },
+    search::{
+        gini, information_gain, score_split, BranchAndBoundDiagnostics, SplitCandidate,
+        SplitScoreConfig, SplitScoreInput,
+    },
+    ClassId, FeatureId, Result,
+};
+use rayon::prelude::*;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+    },
+    time::Instant,
+};
+
+/// Immutable row-mask view of one recursive training node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeView {
+    pub rows: BitSet,
+    pub depth: usize,
+    pub theory_state: PathTheoryState,
+}
+
+/// Borrowed controls for one adaptive candidate-generation request.
+pub struct CandidateGenerationConfig<'a> {
+    pub policy: LanguagePolicy,
+    pub min_leaf: usize,
+    pub beam: usize,
+    pub score: &'a SplitScoreConfig,
+    pub parallel: &'a ParallelConfig,
+    pub adaptive: &'a AdaptiveLanguageConfig,
+}
+
+impl NodeView {
+    pub fn root(dataset: &Dataset) -> Self {
+        Self {
+            rows: BitSet::ones(dataset.labels.len()),
+            depth: 0,
+            theory_state: PathTheoryState::Uncommitted,
+        }
+    }
+}
+
+/// Snapshot of allocation and incremental-statistics counters.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrainingDiagnostics {
+    pub dataset_subset_allocations_avoided: usize,
+    pub predicate_mask_cache_hits: usize,
+    pub predicate_mask_cache_misses: usize,
+    pub count_operations: usize,
+    pub row_rescans_avoided: usize,
+    pub branch_and_bound: BranchAndBoundDiagnostics,
+    pub cache: CacheDiagnostics,
+    pub beam_search: BeamSearchDiagnostics,
+    pub conditional_search: ConditionalSearchDiagnostics,
+    pub parallel: ParallelDiagnostics,
+    pub pruning: PruningDiagnostics,
+    pub adaptive_language: AdaptiveLanguageDiagnostics,
+    pub axp_rerank: AxpRerankDiagnostics,
+}
+
+#[derive(Debug, Default)]
+struct AtomicTrainingDiagnostics {
+    dataset_subset_allocations_avoided: AtomicUsize,
+    predicate_mask_cache_hits: AtomicUsize,
+    predicate_mask_cache_misses: AtomicUsize,
+    count_operations: AtomicUsize,
+    row_rescans_avoided: AtomicUsize,
+}
+
+/// Per-fit immutable dataset plus reusable masks and incremental statistics.
+#[derive(Debug)]
+pub struct TrainingContext {
+    pub dataset: Arc<Dataset>,
+    pub class_masks: Vec<BitSet>,
+    pub boolean_column_masks: Vec<Option<BitSet>>,
+    pub feature_domains: Vec<Vec<f64>>,
+    pub unary_literal_masks: RwLock<BTreeMap<String, Arc<BitSet>>>,
+    pub predicate_mask_cache: RwLock<super::BoundedCache<String, Arc<BitSet>>>,
+    pub cache_config: CacheConfig,
+    node_statistics_cache: RwLock<NodeStatisticsCache>,
+    candidate_pool_cache: RwLock<CandidatePoolCache>,
+    best_subtree_cache: RwLock<BestSubtreeCache>,
+    lookahead_cache: RwLock<LookaheadCache>,
+    cache_diagnostics: RwLock<CacheDiagnostics>,
+    diagnostics: AtomicTrainingDiagnostics,
+    branch_and_bound_diagnostics: RwLock<BranchAndBoundDiagnostics>,
+    beam_search_diagnostics: RwLock<BeamSearchDiagnostics>,
+    conditional_search_diagnostics: RwLock<ConditionalSearchDiagnostics>,
+    parallel_diagnostics: RwLock<ParallelDiagnostics>,
+    pruning_diagnostics: RwLock<PruningDiagnostics>,
+    adaptive_language_diagnostics: RwLock<AdaptiveLanguageDiagnostics>,
+    axp_rerank_diagnostics: RwLock<AxpRerankDiagnostics>,
+}
+
+impl TrainingContext {
+    /// Creates one context for an entire fit. Recursive nodes share this root dataset.
+    pub fn new(dataset: Arc<Dataset>) -> Self {
+        Self::with_cache_config(dataset, CacheConfig::default())
+    }
+
+    pub fn with_cache_config(dataset: Arc<Dataset>, cache_config: CacheConfig) -> Self {
+        let classes = dataset.class_count().max(2);
+        let mut class_masks = vec![BitSet::zeros(dataset.labels.len()); classes];
+        for (row, &class) in dataset.labels.iter().enumerate() {
+            class_masks[class as usize].set(row, true);
+        }
+
+        let mut boolean_column_masks = Vec::with_capacity(dataset.features.cols());
+        let mut feature_domains = Vec::with_capacity(dataset.features.cols());
+        for feature in 0..dataset.features.cols() as FeatureId {
+            let mut values = dataset.features.column(feature).to_vec();
+            values.sort_by(f64::total_cmp);
+            values.dedup();
+            feature_domains.push(values);
+            if is_boolean_column(&dataset.features, feature) {
+                let mut mask = BitSet::zeros(dataset.labels.len());
+                for (row, &value) in dataset.features.column(feature).iter().enumerate() {
+                    mask.set(row, value == 1.0);
+                }
+                boolean_column_masks.push(Some(mask));
+            } else {
+                boolean_column_masks.push(None);
+            }
+        }
+
+        let max_entries = cache_config.max_entries;
+        let max_bytes = cache_config.approximate_byte_limit;
+        Self {
+            dataset,
+            class_masks,
+            boolean_column_masks,
+            feature_domains,
+            unary_literal_masks: RwLock::new(BTreeMap::new()),
+            predicate_mask_cache: RwLock::new(super::BoundedCache::new(max_entries, max_bytes)),
+            cache_config,
+            node_statistics_cache: RwLock::new(NodeStatisticsCache::new(max_entries, max_bytes)),
+            candidate_pool_cache: RwLock::new(CandidatePoolCache::new(max_entries, max_bytes)),
+            best_subtree_cache: RwLock::new(BestSubtreeCache::new(max_entries, max_bytes)),
+            lookahead_cache: RwLock::new(LookaheadCache::new(max_entries, max_bytes)),
+            cache_diagnostics: RwLock::new(CacheDiagnostics::default()),
+            diagnostics: AtomicTrainingDiagnostics::default(),
+            branch_and_bound_diagnostics: RwLock::new(BranchAndBoundDiagnostics::default()),
+            beam_search_diagnostics: RwLock::new(BeamSearchDiagnostics::default()),
+            conditional_search_diagnostics: RwLock::new(ConditionalSearchDiagnostics::default()),
+            parallel_diagnostics: RwLock::new(ParallelDiagnostics::default()),
+            pruning_diagnostics: RwLock::new(PruningDiagnostics::default()),
+            adaptive_language_diagnostics: RwLock::new(AdaptiveLanguageDiagnostics::default()),
+            axp_rerank_diagnostics: RwLock::new(AxpRerankDiagnostics::default()),
+        }
+    }
+
+    pub fn root_view(&self) -> NodeView {
+        NodeView::root(&self.dataset)
+    }
+
+    pub fn sample_count(&self, node: &NodeView) -> usize {
+        self.diagnostics
+            .count_operations
+            .fetch_add(1, Ordering::Relaxed);
+        node.rows.count_ones()
+    }
+
+    pub fn class_counts(&self, node: &NodeView) -> Result<Vec<usize>> {
+        self.diagnostics
+            .count_operations
+            .fetch_add(self.class_masks.len(), Ordering::Relaxed);
+        self.diagnostics
+            .row_rescans_avoided
+            .fetch_add(node.rows.count_ones(), Ordering::Relaxed);
+        self.class_masks
+            .iter()
+            .map(|class| node.rows.intersection_count(class))
+            .collect()
+    }
+
+    pub fn majority_class(&self, node: &NodeView) -> Result<ClassId> {
+        Ok(self
+            .class_counts(node)?
+            .into_iter()
+            .enumerate()
+            .max_by_key(|(_, count)| *count)
+            .map_or(0, |(class, _)| class as ClassId))
+    }
+
+    /// Returns a full-dataset predicate mask, computing it only on the first use.
+    pub fn full_predicate_mask(&self, predicate: &Predicate) -> Arc<BitSet> {
+        let key = predicate_key(predicate);
+        let cache_enabled = self.cache_config.enabled && self.cache_config.predicate_masks;
+        if cache_enabled {
+            if let Some(mask) = self
+                .predicate_mask_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&key)
+            {
+                self.diagnostics
+                    .predicate_mask_cache_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                self.diagnostics
+                    .row_rescans_avoided
+                    .fetch_add(self.dataset.labels.len(), Ordering::Relaxed);
+                self.update_cache_diagnostics(|diagnostics| {
+                    diagnostics.predicate_masks.hits += 1;
+                });
+                return mask;
+            }
+        }
+
+        self.diagnostics
+            .predicate_mask_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.predicate_masks.misses += 1;
+        });
+        let computed = Arc::new(predicate_mask(&self.dataset.features, predicate));
+        if cache_enabled {
+            let approximate_bytes = key.len() + std::mem::size_of_val(computed.words());
+            let evictions = self
+                .predicate_mask_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key.clone(), computed.clone(), approximate_bytes);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.predicate_masks.insertions += 1;
+                diagnostics.predicate_masks.evictions += evictions;
+            });
+            self.refresh_cache_memory();
+        }
+        if matches!(predicate, Predicate::Unary(_)) {
+            self.unary_literal_masks
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(key)
+                .or_insert_with(|| computed.clone());
+        }
+        computed
+    }
+
+    pub fn predicate_mask(&self, node: &NodeView, predicate: &Predicate) -> Result<BitSet> {
+        node.rows.and(&self.full_predicate_mask(predicate))
+    }
+
+    pub fn split_masks(&self, node: &NodeView, predicate: &Predicate) -> Result<(BitSet, BitSet)> {
+        let full = self.full_predicate_mask(predicate);
+        Ok((node.rows.and(&full)?, node.rows.and_not(&full)?))
+    }
+
+    pub fn child_class_counts(&self, child_rows: &BitSet) -> Result<Vec<usize>> {
+        self.diagnostics
+            .count_operations
+            .fetch_add(self.class_masks.len(), Ordering::Relaxed);
+        self.class_masks
+            .iter()
+            .map(|class| child_rows.intersection_count(class))
+            .collect()
+    }
+
+    pub fn balance(&self, true_rows: &BitSet, false_rows: &BitSet) -> f64 {
+        self.diagnostics
+            .count_operations
+            .fetch_add(2, Ordering::Relaxed);
+        let left = true_rows.count_ones();
+        let right = false_rows.count_ones();
+        left.min(right) as f64 / (left + right).max(1) as f64
+    }
+
+    pub fn record_child_views(&self) {
+        self.diagnostics
+            .dataset_subset_allocations_avoided
+            .fetch_add(2, Ordering::Relaxed);
+    }
+
+    pub fn diagnostics(&self) -> TrainingDiagnostics {
+        TrainingDiagnostics {
+            dataset_subset_allocations_avoided: self
+                .diagnostics
+                .dataset_subset_allocations_avoided
+                .load(Ordering::Relaxed),
+            predicate_mask_cache_hits: self
+                .diagnostics
+                .predicate_mask_cache_hits
+                .load(Ordering::Relaxed),
+            predicate_mask_cache_misses: self
+                .diagnostics
+                .predicate_mask_cache_misses
+                .load(Ordering::Relaxed),
+            count_operations: self.diagnostics.count_operations.load(Ordering::Relaxed),
+            row_rescans_avoided: self.diagnostics.row_rescans_avoided.load(Ordering::Relaxed),
+            branch_and_bound: self
+                .branch_and_bound_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            cache: self.cache_diagnostics(),
+            beam_search: self
+                .beam_search_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            conditional_search: self
+                .conditional_search_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            parallel: self
+                .parallel_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            pruning: self
+                .pruning_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            adaptive_language: self
+                .adaptive_language_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+            axp_rerank: self
+                .axp_rerank_diagnostics
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        }
+    }
+
+    pub fn record_beam_search(&self, diagnostics: BeamSearchDiagnostics) {
+        *self
+            .beam_search_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
+    }
+
+    pub fn record_conditional_search(
+        &self,
+        branch_and_bound_activated: bool,
+        branch_and_bound_avoided: bool,
+        cache_activated: bool,
+        estimated_work_saved: usize,
+    ) {
+        let mut diagnostics = self
+            .conditional_search_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.branch_and_bound_activation_count += usize::from(branch_and_bound_activated);
+        diagnostics.branch_and_bound_avoided_count += usize::from(branch_and_bound_avoided);
+        diagnostics.cache_activation_count += usize::from(cache_activated);
+        diagnostics.estimated_work_saved += estimated_work_saved;
+    }
+
+    fn record_parallel(&self, update: impl FnOnce(&mut ParallelDiagnostics)) {
+        update(
+            &mut self
+                .parallel_diagnostics
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
+    pub fn record_pruning(&self, diagnostics: PruningDiagnostics) {
+        *self
+            .pruning_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = diagnostics;
+    }
+
+    pub fn record_selected_tree(&self, tree: &crate::tree::TreeNode) {
+        fn visit(
+            tree: &crate::tree::TreeNode,
+            depth: usize,
+            diagnostics: &mut AdaptiveLanguageDiagnostics,
+        ) {
+            if let crate::tree::TreeNode::Internal {
+                predicate,
+                left,
+                right,
+                ..
+            } = tree
+            {
+                let family = format!("{:?}", predicate.language());
+                *diagnostics
+                    .selected_family_counts
+                    .entry(family.clone())
+                    .or_default() += 1;
+                *diagnostics
+                    .selected_family_counts_by_depth
+                    .entry(depth)
+                    .or_default()
+                    .entry(family)
+                    .or_default() += 1;
+                visit(left, depth + 1, diagnostics);
+                visit(right, depth + 1, diagnostics);
+            }
+        }
+        let mut diagnostics = self
+            .adaptive_language_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.selected_family_counts.clear();
+        diagnostics.selected_family_counts_by_depth.clear();
+        visit(tree, 0, &mut diagnostics);
+    }
+
+    pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {
+        let mut total = self
+            .branch_and_bound_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        total.partial_states_created += current.partial_states_created;
+        total.partial_states_expanded += current.partial_states_expanded;
+        total.partial_states_pruned += current.partial_states_pruned;
+        total.exhaustive_fallback_count += current.exhaustive_fallback_count;
+        total.complete_candidates_evaluated += current.complete_candidates_evaluated;
+        total.best_bound = total.best_bound.max(current.best_bound);
+        total.kth_best_threshold = current.kth_best_threshold;
+        total.percentage_reduction = if total.partial_states_created == 0 {
+            0.0
+        } else {
+            100.0 * total.partial_states_pruned as f64 / total.partial_states_created as f64
+        };
+    }
+
+    fn update_cache_diagnostics(&self, update: impl FnOnce(&mut CacheDiagnostics)) {
+        update(
+            &mut self
+                .cache_diagnostics
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+    }
+
+    fn refresh_cache_memory(&self) {
+        let bytes = self
+            .predicate_mask_cache
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .approximate_bytes()
+            + self
+                .node_statistics_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .candidate_pool_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .best_subtree_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes()
+            + self
+                .lookahead_cache
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .approximate_bytes();
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.approximate_memory_bytes = bytes;
+        });
+    }
+
+    pub fn cache_diagnostics(&self) -> CacheDiagnostics {
+        self.cache_diagnostics
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn node_statistics_cached(
+        &self,
+        key: &SearchStateKey,
+        node: &NodeView,
+    ) -> Result<NodeStatistics> {
+        let enabled = self.cache_config.enabled && self.cache_config.node_statistics;
+        if enabled {
+            if let Some(statistics) = self
+                .node_statistics_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(key)
+            {
+                self.update_cache_diagnostics(|diagnostics| {
+                    diagnostics.node_statistics.hits += 1;
+                });
+                return Ok(statistics);
+            }
+        }
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.node_statistics.misses += 1;
+        });
+        let class_counts = self.class_counts(node)?;
+        let statistics = NodeStatistics {
+            sample_count: node.rows.count_ones(),
+            majority_class: class_counts
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, count)| **count)
+                .map_or(0, |(class, _)| class as ClassId),
+            class_counts,
+        };
+        if enabled {
+            let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+                + statistics.class_counts.len() * std::mem::size_of::<usize>()
+                + 64;
+            let evictions = self
+                .node_statistics_cache
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key.clone(), statistics.clone(), bytes);
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.node_statistics.insertions += 1;
+                diagnostics.node_statistics.evictions += evictions;
+            });
+            self.refresh_cache_memory();
+        }
+        Ok(statistics)
+    }
+
+    pub fn candidate_pool_cached(&self, key: &SearchStateKey) -> Option<Vec<SplitCandidate>> {
+        if !(self.cache_config.enabled && self.cache_config.candidate_pools) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.candidate_pools.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .candidate_pool_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.candidate_pools.hits += 1;
+            } else {
+                diagnostics.candidate_pools.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_candidate_pool(&self, key: SearchStateKey, candidates: Vec<SplitCandidate>) {
+        if !(self.cache_config.enabled && self.cache_config.candidate_pools) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+            + candidates.len() * std::mem::size_of::<SplitCandidate>();
+        let evictions = self
+            .candidate_pool_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, candidates, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.candidate_pools.insertions += 1;
+            diagnostics.candidate_pools.evictions += evictions;
+        });
+        self.refresh_cache_memory();
+    }
+
+    pub fn best_subtree_cached(&self, key: &SearchStateKey) -> Option<CachedSubtree> {
+        if !(self.cache_config.enabled && self.cache_config.best_subtrees) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.best_subtrees.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .best_subtree_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.best_subtrees.hits += 1;
+            } else {
+                diagnostics.best_subtrees.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_best_subtree(&self, key: SearchStateKey, subtree: CachedSubtree) {
+        if !(self.cache_config.enabled && self.cache_config.best_subtrees) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>()
+            + subtree.node_count * std::mem::size_of::<crate::tree::TreeNode>();
+        let evictions = self
+            .best_subtree_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, subtree, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.best_subtrees.insertions += 1;
+            diagnostics.best_subtrees.evictions += evictions;
+        });
+        self.refresh_cache_memory();
+    }
+
+    pub fn lookahead_cached(&self, key: &SearchStateKey) -> Option<f64> {
+        if !(self.cache_config.enabled && self.cache_config.lookahead) {
+            self.update_cache_diagnostics(|diagnostics| {
+                diagnostics.lookahead.misses += 1;
+            });
+            return None;
+        }
+        let found = self
+            .lookahead_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(key);
+        self.update_cache_diagnostics(|diagnostics| {
+            if found.is_some() {
+                diagnostics.lookahead.hits += 1;
+            } else {
+                diagnostics.lookahead.misses += 1;
+            }
+        });
+        found
+    }
+
+    pub fn insert_lookahead(&self, key: SearchStateKey, objective: f64) {
+        if !(self.cache_config.enabled && self.cache_config.lookahead) {
+            return;
+        }
+        let bytes = key.row_mask_words.len() * std::mem::size_of::<u64>() + 64;
+        let evictions = self
+            .lookahead_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, objective, bytes);
+        self.update_cache_diagnostics(|diagnostics| {
+            diagnostics.lookahead.insertions += 1;
+            diagnostics.lookahead.evictions += evictions;
+        });
+        self.refresh_cache_memory();
+    }
+
+    fn node_values(&self, node: &NodeView, feature: FeatureId) -> Vec<f64> {
+        let mut values = Vec::new();
+        for row in 0..node.rows.len() {
+            if node.rows.get(row) {
+                values.push(self.dataset.features.get(row, feature));
+            }
+        }
+        values.sort_by(f64::total_cmp);
+        values.dedup();
+        values
+    }
+
+    fn score_candidate(
+        &self,
+        node: &NodeView,
+        predicate: Predicate,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Option<(SplitCandidate, BitSet)>> {
+        let (true_rows, false_rows) = self.split_masks(node, &predicate)?;
+        let left = true_rows.count_ones();
+        let right = false_rows.count_ones();
+        if left == 0 || right == 0 {
+            return Ok(None);
+        }
+        let parent_counts = self.class_counts(node)?;
+        let left_counts = self.child_class_counts(&true_rows)?;
+        let right_counts = self.child_class_counts(&false_rows)?;
+        let gain = information_gain(&parent_counts, &left_counts, &right_counts);
+        let total = left + right;
+        let fragmentation = 1.0 - 2.0 * left.min(right) as f64 / total as f64;
+        let estimated_subtree_cost =
+            (left as f64 * gini(&left_counts) + right as f64 * gini(&right_counts)) / total as f64;
+        let instability = (left as f64 / total as f64 - 0.5).abs() * 2.0;
+        Ok(Some((
+            SplitCandidate {
+                score: score_split(
+                    SplitScoreInput {
+                        information_gain: gain,
+                        true_count: left,
+                        false_count: right,
+                        literal_count: predicate.arity(),
+                        family: predicate.language(),
+                        fragmentation,
+                        estimated_subtree_cost,
+                        instability,
+                    },
+                    score_config,
+                ),
+                predicate,
+                left_count: left,
+                right_count: right,
+            },
+            true_rows,
+        )))
+    }
+
+    /// Scores only candidates admissible under the node's current path theory.
+    /// Incompatible and degenerate candidates return before numerical scoring.
+    pub fn score_if_admissible(
+        &self,
+        node: &NodeView,
+        predicate: Predicate,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Option<crate::search::CandidateScore>> {
+        if !candidate_is_compatible(node.theory_state, &predicate) {
+            return Ok(None);
+        }
+        Ok(self
+            .score_candidate(node, predicate, score_config)?
+            .map(|(candidate, _)| candidate.score))
+    }
+
+    fn ranked_literals(
+        &self,
+        node: &NodeView,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<Literal>> {
+        let mut literals = Vec::new();
+        for feature in 0..self.dataset.features.cols() as FeatureId {
+            let values = self.node_values(node, feature);
+            for window in values.windows(2) {
+                let atom = ThresholdAtom {
+                    feature,
+                    threshold_id: 0,
+                    threshold: (window[0] + window[1]) / 2.0,
+                    op: ThresholdOp::GreaterEqual,
+                };
+                literals.push(Literal {
+                    atom,
+                    positive: true,
+                });
+                literals.push(Literal {
+                    atom,
+                    positive: false,
+                });
+            }
+        }
+        let mut scored = Vec::with_capacity(literals.len());
+        for literal in literals {
+            let gain = self
+                .score_candidate(node, Predicate::Unary(literal), score_config)?
+                .map_or(f64::NEG_INFINITY, |(candidate, _)| {
+                    candidate.score.predictive_gain
+                });
+            scored.push((literal, gain));
+        }
+        scored.sort_by(|(_, left), (_, right)| right.total_cmp(left));
+        Ok(scored.into_iter().map(|(literal, _)| literal).collect())
+    }
+
+    fn generate_unary(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let mut output = Vec::new();
+        for feature in 0..self.dataset.features.cols() as FeatureId {
+            let values = self.node_values(node, feature);
+            for window in values.windows(2) {
+                let predicate = Predicate::Unary(Literal {
+                    atom: ThresholdAtom {
+                        feature,
+                        threshold_id: 0,
+                        threshold: (window[0] + window[1]) / 2.0,
+                        op: ThresholdOp::LessThan,
+                    },
+                    positive: true,
+                });
+                if let Some((candidate, _)) = self.score_candidate(node, predicate, score_config)? {
+                    if candidate.left_count >= min_leaf && candidate.right_count >= min_leaf {
+                        output.push(candidate);
+                    }
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    fn generate_clause_family(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        beam: usize,
+        horn: bool,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let selected: Vec<_> = self
+            .ranked_literals(node, score_config)?
+            .into_iter()
+            .take(beam.max(2))
+            .collect();
+        let mut seen_masks = BTreeSet::new();
+        let mut output = Vec::new();
+        for first in 0..selected.len() {
+            for second in first + 1..selected.len() {
+                let a = selected[first];
+                let b = selected[second];
+                if same_atom_opposite_polarity(a, b) {
+                    continue;
+                }
+                let literals = vec![a, b];
+                let wrong_polarity = if horn {
+                    literals.iter().filter(|literal| literal.positive).count() > 1
+                } else {
+                    literals.iter().filter(|literal| !literal.positive).count() > 1
+                };
+                if wrong_polarity {
+                    continue;
+                }
+                let predicate = if horn {
+                    Predicate::HornClause(literals)
+                } else {
+                    Predicate::AntiHornClause(literals)
+                };
+                if let Some((candidate, mask)) =
+                    self.score_candidate(node, predicate, score_config)?
+                {
+                    if candidate.left_count < min_leaf || candidate.right_count < min_leaf {
+                        continue;
+                    }
+                    if seen_masks.insert(mask.words().to_vec()) {
+                        output.push(candidate);
+                    }
+                }
+            }
+        }
+        output.sort_by(|a, b| b.score.final_score.total_cmp(&a.score.final_score));
+        Ok(output)
+    }
+
+    fn generate_square2cnf(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let selected: Vec<_> = self
+            .ranked_literals(node, score_config)?
+            .into_iter()
+            .take(beam.max(4))
+            .collect();
+        let mut clauses = Vec::new();
+        for first in 0..selected.len() {
+            for second in first + 1..selected.len() {
+                let a = selected[first];
+                let b = selected[second];
+                if !same_atom_opposite_polarity(a, b) {
+                    let predicate = Predicate::Square2Cnf { a, b, c: a, d: b };
+                    let gain = self
+                        .score_candidate(node, predicate, score_config)?
+                        .map_or(f64::NEG_INFINITY, |(candidate, _)| {
+                            candidate.score.predictive_gain
+                        });
+                    clauses.push((a, b, gain));
+                }
+            }
+        }
+        clauses.sort_by(|(_, _, left), (_, _, right)| right.total_cmp(left));
+
+        let mut seen_masks = BTreeSet::new();
+        let mut output = Vec::new();
+        for (index, &(a, b, _)) in clauses.iter().enumerate() {
+            self.consider_square(
+                node,
+                min_leaf,
+                Predicate::Square2Cnf { a, b, c: a, d: b },
+                &mut seen_masks,
+                &mut output,
+                score_config,
+            )?;
+            for &(c, d, _) in clauses.iter().skip(index + 1) {
+                self.consider_square(
+                    node,
+                    min_leaf,
+                    Predicate::Square2Cnf { a, b, c, d },
+                    &mut seen_masks,
+                    &mut output,
+                    score_config,
+                )?;
+            }
+        }
+        output.sort_by(|a, b| b.score.final_score.total_cmp(&a.score.final_score));
+        Ok(output)
+    }
+
+    fn consider_square(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        predicate: Predicate,
+        seen_masks: &mut BTreeSet<Vec<u64>>,
+        output: &mut Vec<SplitCandidate>,
+        score_config: &SplitScoreConfig,
+    ) -> Result<()> {
+        if let Some((candidate, mask)) = self.score_candidate(node, predicate, score_config)? {
+            if candidate.left_count >= min_leaf
+                && candidate.right_count >= min_leaf
+                && seen_masks.insert(mask.words().to_vec())
+            {
+                output.push(candidate);
+            }
+        }
+        Ok(())
+    }
+
+    fn generate_affine(
+        &self,
+        node: &NodeView,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let mut ranked = Vec::new();
+        for feature in 0..self.dataset.features.cols() as FeatureId {
+            if self.boolean_column_masks[feature as usize].is_none() {
+                continue;
+            }
+            let predicate = Predicate::Unary(boolean_literal(feature));
+            let gain = self
+                .score_candidate(node, predicate, score_config)?
+                .map_or(f64::NEG_INFINITY, |(candidate, _)| {
+                    candidate.score.predictive_gain
+                });
+            ranked.push((feature, gain));
+        }
+        ranked.sort_by(|(left_feature, left), (right_feature, right)| {
+            right.total_cmp(left).then(left_feature.cmp(right_feature))
+        });
+        let pool: Vec<_> = ranked
+            .into_iter()
+            .map(|(feature, _)| feature)
+            .take(beam.max(3).max(2))
+            .collect();
+        let mut seen_masks = BTreeSet::new();
+        let mut output = Vec::new();
+        for arity in 2..=3 {
+            for combination in combinations(pool.len(), arity) {
+                let mut literals: Vec<_> = combination
+                    .iter()
+                    .map(|&index| boolean_literal(pool[index]))
+                    .collect();
+                literals.sort_by_key(|literal| literal.atom.feature);
+                for rhs in [false, true] {
+                    let predicate = Predicate::Affine {
+                        literals: literals.clone(),
+                        rhs,
+                    };
+                    if let Some((candidate, mask)) =
+                        self.score_candidate(node, predicate, score_config)?
+                    {
+                        if candidate.left_count >= min_leaf
+                            && candidate.right_count >= min_leaf
+                            && seen_masks.insert(mask.words().to_vec())
+                        {
+                            output.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+        output.sort_by(|a, b| b.score.final_score.total_cmp(&a.score.final_score));
+        Ok(output)
+    }
+
+    /// Generates the same bounded per-node families without materializing a dataset subset.
+    pub fn generate_candidates(
+        &self,
+        node: &NodeView,
+        policy: LanguagePolicy,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let mut output = Vec::new();
+        match policy {
+            LanguagePolicy::UnaryOnly => {
+                output.extend(self.generate_unary(node, min_leaf, score_config)?)
+            }
+            LanguagePolicy::HornOnly => output.extend(self.generate_clause_family(
+                node,
+                min_leaf,
+                beam,
+                true,
+                score_config,
+            )?),
+            LanguagePolicy::AntiHornOnly => output.extend(self.generate_clause_family(
+                node,
+                min_leaf,
+                beam,
+                false,
+                score_config,
+            )?),
+            LanguagePolicy::Square2CnfOnly => {
+                output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?)
+            }
+            LanguagePolicy::AffineOnly => {
+                output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
+            }
+            LanguagePolicy::SmartCertified => {
+                // Compatibility is enforced before family generation and therefore
+                // before any candidate receives a numerical score.
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
+                match node.theory_state {
+                    PathTheoryState::Uncommitted => {
+                        output.extend(self.generate_clause_family(
+                            node,
+                            min_leaf,
+                            beam,
+                            true,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_clause_family(
+                            node,
+                            min_leaf,
+                            beam,
+                            false,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_square2cnf(
+                            node,
+                            min_leaf,
+                            beam,
+                            score_config,
+                        )?);
+                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?);
+                    }
+                    PathTheoryState::Horn => output.extend(self.generate_clause_family(
+                        node,
+                        min_leaf,
+                        beam,
+                        true,
+                        score_config,
+                    )?),
+                    PathTheoryState::AntiHorn => output.extend(self.generate_clause_family(
+                        node,
+                        min_leaf,
+                        beam,
+                        false,
+                        score_config,
+                    )?),
+                    PathTheoryState::TwoSat => output.extend(self.generate_square2cnf(
+                        node,
+                        min_leaf,
+                        beam,
+                        score_config,
+                    )?),
+                    PathTheoryState::AffineGf2 => {
+                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
+                    }
+                }
+            }
+            LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => {
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
+                output.extend(self.generate_clause_family(
+                    node,
+                    min_leaf,
+                    beam,
+                    true,
+                    score_config,
+                )?);
+                output.extend(self.generate_clause_family(
+                    node,
+                    min_leaf,
+                    beam,
+                    false,
+                    score_config,
+                )?);
+                output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?);
+            }
+            LanguagePolicy::EmpiricalMixed | LanguagePolicy::TunedExperimental => {
+                output.extend(self.generate_unary(node, min_leaf, score_config)?);
+            }
+        }
+        Ok(output)
+    }
+
+    /// Evaluates independent compatible family pools concurrently, then applies
+    /// the same stable total ordering used by serial candidate selection.
+    pub fn generate_candidates_parallel(
+        &self,
+        node: &NodeView,
+        policy: LanguagePolicy,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+        parallel: &ParallelConfig,
+    ) -> Result<Vec<SplitCandidate>> {
+        let families = generation_policies(policy, node.theory_state);
+        let should_parallel = parallel.enabled
+            && parallel.parallel_candidates
+            && families.len() >= parallel.minimum_parallel_work.max(1);
+        if !should_parallel {
+            self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
+            return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+        }
+
+        let evaluate = || {
+            families
+                .par_iter()
+                .map(|&family| self.generate_candidates(node, family, min_leaf, beam, score_config))
+                .collect::<Vec<_>>()
+        };
+        let (batches, threads) = if let Some(threads) = parallel.threads {
+            match rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.max(1))
+                .build()
+            {
+                Ok(pool) => (pool.install(evaluate), threads.max(1)),
+                Err(_) => {
+                    self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
+                    return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+                }
+            }
+        } else {
+            (evaluate(), rayon::current_num_threads())
+        };
+
+        let mut output = Vec::new();
+        for batch in batches {
+            output.extend(batch?);
+        }
+        output.sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        self.record_parallel(|diagnostics| {
+            diagnostics.configured_threads = threads;
+            diagnostics.family_tasks += families.len();
+            diagnostics.candidate_batches_parallelized += 1;
+        });
+        Ok(output)
+    }
+
+    /// Runs a deterministic pilot for every compatible family, allocates an
+    /// exact retained-candidate budget, and preserves per-family diversity.
+    pub fn generate_candidates_adaptive(
+        &self,
+        node: &NodeView,
+        request: CandidateGenerationConfig<'_>,
+    ) -> Result<Vec<SplitCandidate>> {
+        let CandidateGenerationConfig {
+            policy,
+            min_leaf,
+            beam,
+            score: score_config,
+            parallel,
+            adaptive,
+        } = request;
+        if !adaptive.enabled || policy != LanguagePolicy::SmartCertified {
+            return self.generate_candidates_parallel(
+                node,
+                policy,
+                min_leaf,
+                beam,
+                score_config,
+                parallel,
+            );
+        }
+        let policies = generation_policies(policy, node.theory_state);
+        // Reuse the deterministic parallel family evaluator for the pilot.
+        // Results are regrouped by family below, so completion order cannot
+        // influence utilities or budget allocation.
+        let parallel_pilot = if parallel.enabled && parallel.parallel_candidates {
+            Some(self.generate_candidates_parallel(
+                node,
+                policy,
+                min_leaf,
+                adaptive.pilot_candidates_per_family.max(1),
+                score_config,
+                parallel,
+            )?)
+        } else {
+            None
+        };
+        let mut pilot_batches = Vec::with_capacity(policies.len());
+        let mut pilots = Vec::with_capacity(policies.len());
+        for &family_policy in &policies {
+            let family = family_for_policy(family_policy);
+            let mut candidates = if let Some(all) = &parallel_pilot {
+                all.iter()
+                    .filter(|candidate| candidate.predicate.language() == family)
+                    .cloned()
+                    .collect()
+            } else {
+                self.generate_candidates(
+                    node,
+                    family_policy,
+                    min_leaf,
+                    adaptive.pilot_candidates_per_family.max(1),
+                    score_config,
+                )?
+            };
+            candidates.sort_by(|left, right| {
+                crate::search::compare_candidates(left, right, score_config)
+            });
+            let top = candidates
+                .iter()
+                .take(adaptive.pilot_candidates_per_family.max(1))
+                .collect::<Vec<_>>();
+            let best_score = top
+                .first()
+                .map_or(0.0, |candidate| candidate.score.final_score);
+            let mean_top_k_score = if top.is_empty() {
+                0.0
+            } else {
+                top.iter()
+                    .map(|candidate| candidate.score.final_score)
+                    .sum::<f64>()
+                    / top.len() as f64
+            };
+            let best_gain = top
+                .iter()
+                .map(|candidate| candidate.score.predictive_gain)
+                .max_by(f64::total_cmp)
+                .unwrap_or(0.0);
+            let score_per_literal = top.first().map_or(0.0, |candidate| {
+                candidate.score.final_score / candidate.predicate.arity().max(1) as f64
+            });
+            let mut masks = BTreeSet::new();
+            for candidate in &candidates {
+                masks.insert(
+                    self.full_predicate_mask(&candidate.predicate)
+                        .words()
+                        .to_vec(),
+                );
+            }
+            let duplicate_mask_rate = if candidates.is_empty() {
+                0.0
+            } else {
+                1.0 - masks.len() as f64 / candidates.len() as f64
+            };
+            pilots.push(FamilyPilotMetrics {
+                family,
+                best_score,
+                mean_top_k_score,
+                best_gain,
+                score_per_literal,
+                generation_cost: candidates.len() as f64
+                    / adaptive.total_candidate_budget.max(1) as f64,
+                duplicate_mask_rate,
+                branch_and_bound_pruning_rate: 0.0,
+                candidates_generated: candidates.len(),
+            });
+            pilot_batches.push(candidates);
+        }
+        let budgets = allocate_family_budgets(adaptive, &pilots);
+        let mut output = Vec::new();
+        let mut generated = 0usize;
+        for ((family_policy, pilot), budget) in
+            policies.iter().copied().zip(pilot_batches).zip(&budgets)
+        {
+            let mut candidates = if budget.final_budget <= pilot.len() {
+                pilot
+            } else {
+                self.generate_candidates(
+                    node,
+                    family_policy,
+                    min_leaf,
+                    // The allocation is a retained-candidate quota, not a
+                    // literal-construction beam. Keeping these controls
+                    // separate prevents combinatorial family expansion.
+                    beam,
+                    score_config,
+                )?
+            };
+            generated += candidates.len();
+            candidates.sort_by(|left, right| {
+                crate::search::compare_candidates(left, right, score_config)
+            });
+            candidates.truncate(budget.final_budget);
+            output.extend(candidates);
+        }
+        output.sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        self.adaptive_language_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .nodes
+            .push(AdaptiveNodeDiagnostics {
+                depth: node.depth,
+                theory_state: node.theory_state,
+                compatible_families: pilots.iter().map(|pilot| pilot.family).collect(),
+                pilots,
+                budgets,
+                candidates_generated: generated,
+                candidates_retained: output.len(),
+            });
+        Ok(output)
+    }
+
+    /// Reranks only the leading admissible candidates using certified AXps of
+    /// provisional majority-leaf stumps on deterministic training-node rows.
+    pub fn rerank_candidates_by_axp(
+        &self,
+        node: &NodeView,
+        mut candidates: Vec<SplitCandidate>,
+        score_config: &SplitScoreConfig,
+        config: &AxpRerankConfig,
+        seed: u64,
+    ) -> Result<Vec<SplitCandidate>> {
+        if !config.enabled || candidates.is_empty() {
+            return Ok(candidates);
+        }
+        candidates
+            .sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        let shortlist = config.shortlist_size.min(candidates.len());
+        let sample_rows = deterministic_node_sample(
+            &node.rows,
+            config.validation_samples,
+            seed ^ node.depth as u64,
+        );
+        let started = Instant::now();
+        let mut local = AxpRerankDiagnostics {
+            enabled: true,
+            shortlist_considered: shortlist,
+            ..AxpRerankDiagnostics::default()
+        };
+        for candidate in candidates.iter_mut().take(shortlist) {
+            let original_score = candidate.score.final_score;
+            let next_state = next_theory_state(node.theory_state, &candidate.predicate)?;
+            let timed_out_before = config
+                .timeout_ms
+                .is_some_and(|limit| started.elapsed().as_millis() >= u128::from(limit));
+            let mut timed_out = timed_out_before;
+            let mut lengths = Vec::new();
+            let (true_rows, false_rows) = self.split_masks(node, &candidate.predicate)?;
+            let true_counts = self.child_class_counts(&true_rows)?;
+            let false_counts = self.child_class_counts(&false_rows)?;
+            let stump = crate::tree::TreeNode::Internal {
+                predicate: candidate.predicate.clone(),
+                left: Box::new(crate::tree::TreeNode::Leaf {
+                    class: majority_from_counts(&true_counts),
+                    samples: true_rows.count_ones(),
+                }),
+                right: Box::new(crate::tree::TreeNode::Leaf {
+                    class: majority_from_counts(&false_counts),
+                    samples: false_rows.count_ones(),
+                }),
+                majority_class: self.majority_class(node)?,
+            };
+            if !timed_out {
+                for &row in &sample_rows {
+                    if config
+                        .timeout_ms
+                        .is_some_and(|limit| started.elapsed().as_millis() >= u128::from(limit))
+                    {
+                        timed_out = true;
+                        break;
+                    }
+                    let axp = extract_axp_deletion(&stump, &self.dataset.features, row, true);
+                    if !axp.metadata.theorem_certified {
+                        timed_out = true;
+                        break;
+                    }
+                    lengths.push(axp.features.len());
+                }
+            }
+            if config.timeout_ms.is_some_and(|limit| {
+                started.elapsed().as_millis() >= u128::from(limit)
+                    && lengths.len() < sample_rows.len()
+            }) {
+                timed_out = true;
+            }
+            let (mean, maximum) = if timed_out || lengths.is_empty() {
+                (None, None)
+            } else {
+                (
+                    Some(lengths.iter().sum::<usize>() as f64 / lengths.len() as f64),
+                    lengths.iter().copied().max(),
+                )
+            };
+            if let (Some(mean), Some(maximum)) = (mean, maximum) {
+                let penalty =
+                    config.weight_mean_axp * mean + config.weight_max_axp * maximum as f64;
+                candidate.score.axp_rerank_penalty = penalty;
+                candidate.score.final_score = original_score - penalty;
+                local.candidates_evaluated += 1;
+            } else if timed_out {
+                local.timeout_count += 1;
+            }
+            local.candidates.push(AxpCandidateDiagnostics {
+                canonical_predicate: crate::search::canonical_predicate_key(&candidate.predicate),
+                family: candidate.predicate.language(),
+                path_theory_state: next_state,
+                backend: next_state.backend(),
+                original_score,
+                rerank_score: candidate.score.final_score,
+                mean_axp_length: mean,
+                max_axp_length: maximum,
+                validation_samples: lengths.len(),
+                timed_out,
+                theorem_certified: crate::tree::tree_is_certified(&stump),
+            });
+        }
+        local.elapsed_seconds = started.elapsed().as_secs_f64();
+        candidates
+            .sort_by(|left, right| crate::search::compare_candidates(left, right, score_config));
+        let mut diagnostics = self
+            .axp_rerank_diagnostics
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        diagnostics.enabled = true;
+        diagnostics.shortlist_considered += local.shortlist_considered;
+        diagnostics.candidates_evaluated += local.candidates_evaluated;
+        diagnostics.timeout_count += local.timeout_count;
+        diagnostics.elapsed_seconds += local.elapsed_seconds;
+        diagnostics.candidates.extend(local.candidates);
+        Ok(candidates)
+    }
+}
+
+fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<LanguagePolicy> {
+    match policy {
+        LanguagePolicy::SmartCertified => {
+            let mut policies = vec![LanguagePolicy::UnaryOnly];
+            match state {
+                PathTheoryState::Uncommitted => policies.extend([
+                    LanguagePolicy::HornOnly,
+                    LanguagePolicy::AntiHornOnly,
+                    LanguagePolicy::Square2CnfOnly,
+                    LanguagePolicy::AffineOnly,
+                ]),
+                PathTheoryState::Horn => policies.push(LanguagePolicy::HornOnly),
+                PathTheoryState::AntiHorn => policies.push(LanguagePolicy::AntiHornOnly),
+                PathTheoryState::TwoSat => policies.push(LanguagePolicy::Square2CnfOnly),
+                PathTheoryState::AffineGf2 => policies.push(LanguagePolicy::AffineOnly),
+            }
+            policies
+        }
+        LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => vec![
+            LanguagePolicy::UnaryOnly,
+            LanguagePolicy::HornOnly,
+            LanguagePolicy::AntiHornOnly,
+            LanguagePolicy::Square2CnfOnly,
+        ],
+        LanguagePolicy::EmpiricalMixed | LanguagePolicy::TunedExperimental => {
+            vec![LanguagePolicy::UnaryOnly]
+        }
+        family => vec![family],
+    }
+}
+
+fn family_for_policy(policy: LanguagePolicy) -> crate::logic::LanguageFamily {
+    match policy {
+        LanguagePolicy::UnaryOnly => crate::logic::LanguageFamily::Unary,
+        LanguagePolicy::HornOnly => crate::logic::LanguageFamily::Horn,
+        LanguagePolicy::AntiHornOnly => crate::logic::LanguageFamily::AntiHorn,
+        LanguagePolicy::Square2CnfOnly => crate::logic::LanguageFamily::Square2Cnf,
+        LanguagePolicy::AffineOnly => crate::logic::LanguageFamily::Affine,
+        _ => crate::logic::LanguageFamily::SmartCertified,
+    }
+}
+
+fn majority_from_counts(counts: &[usize]) -> ClassId {
+    counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)
+        .map_or(0, |(class, _)| class as ClassId)
+}
+
+fn deterministic_node_sample(rows: &BitSet, count: usize, seed: u64) -> Vec<usize> {
+    let mut indices = (0..rows.len())
+        .filter(|&row| rows.get(row))
+        .collect::<Vec<_>>();
+    indices.sort_by_key(|&row| {
+        let mut value = row as u64 ^ seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        value ^ (value >> 31)
+    });
+    indices.truncate(count.min(indices.len()));
+    indices
+}
+
+fn predicate_key(predicate: &Predicate) -> String {
+    format!("{predicate:?}")
+}
+
+fn same_atom_opposite_polarity(a: Literal, b: Literal) -> bool {
+    a.atom.feature == b.atom.feature
+        && a.atom.threshold == b.atom.threshold
+        && a.atom.op == b.atom.op
+        && a.positive != b.positive
+}
+
+fn boolean_literal(feature: FeatureId) -> Literal {
+    Literal {
+        atom: ThresholdAtom {
+            feature,
+            threshold_id: 0,
+            threshold: 0.5,
+            op: ThresholdOp::GreaterEqual,
+        },
+        positive: true,
+    }
+}
+
+fn combinations(n: usize, k: usize) -> Vec<Vec<usize>> {
+    let mut output = Vec::new();
+    if k == 0 || k > n {
+        return output;
+    }
+    let mut indices: Vec<usize> = (0..k).collect();
+    loop {
+        output.push(indices.clone());
+        let mut index = k - 1;
+        while indices[index] == index + n - k {
+            if index == 0 {
+                return output;
+            }
+            index -= 1;
+        }
+        indices[index] += 1;
+        for next in index + 1..k {
+            indices[next] = indices[next - 1] + 1;
+        }
+    }
+}

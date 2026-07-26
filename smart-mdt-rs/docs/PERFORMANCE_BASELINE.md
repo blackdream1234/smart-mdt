@@ -1,6 +1,10 @@
 # Performance baseline
 
-This document records the current Rust-only baseline. It is not a Python speedup claim.
+> **Historical microbenchmark evidence.** This document predates the final
+> correctness audit and records a separate synthetic `cargo bench` baseline,
+> not the publication dataset benchmark. It is retained for development
+> history, is not a Python speedup claim, and is not freeze evidence. See
+> `FINAL_FREEZE_REPORT.md` for the current artifact decision.
 
 ## Environment
 

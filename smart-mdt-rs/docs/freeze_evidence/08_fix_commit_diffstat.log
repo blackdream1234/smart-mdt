@@ -1,0 +1,40 @@
+commit d75391d5cfd5ae46372e9f46f1cccf291aac0a38
+Author: blackdream1234 <12joseph.jh@gmail.com>
+Date:   Fri Jul 24 13:51:27 2026 +0300
+
+    Cache tree/domain-invariant facts in weak-AXp checking
+    
+    extract_axp_deletion / extract_final_tree_axps call weak_axp_check once
+    per feature-deletion trial and once per held-out row, and each call
+    recomputed backend_meta (a function of the tree only) and is_binary_domain
+    (a full O(rows x features) rescan of the reference domain, invariant across
+    the whole extraction) from scratch. Profiling on letter.dl8 (224 features,
+    depth-5 tree) showed this rescan alone was 99.8% of AXp-extraction time
+    versus 0.1% for the actual certified GF(2)/Horn/AntiHorn/2-SAT solve, and
+    the strict full-corpus benchmark was on track for ~20 days.
+    
+    Hoist both into an AxpCheckContext computed once per tree/domain pair and
+    threaded through *_with_context variants. weak_axp_check and
+    extract_axp_deletion keep identical public signatures and behavior (they
+    build the context internally); only repeat callers reuse it.
+    
+    This is a correctness-neutral change: the cached bool is the exact value
+    the old code recomputed every call, so every certification decision, AXp,
+    and reported metric is unchanged. Verified by:
+    - 7 new equivalence unit tests (cached vs uncached path, byte-identical
+      WeakAxpResult / AxpResult across certified success, non-Boolean-domain
+      rejection, dimension-mismatch, out-of-bounds row, and empirical mode);
+    - the full existing suite (161 -> 168 tests, all pass unchanged);
+    - an end-to-end A/B benchmark (3 datasets x 8 methods, before-fix vs
+      after-fix binary): 0 differences across all 88 non-timing columns
+      (accuracy, tree structure, theorem_certified, backend, path state,
+      axp_valid_rate, axp_minimal_rate, pruning/search diagnostics), with the
+      only residual variance (predicate_mask_cache_hits/misses) shown to be
+      pre-existing run-to-run noise present between two runs of the same binary;
+    - a direct measurement: 112.26s -> 0.062s for 30 rows of letter.dl8,
+      same certification result (valid=30, minimal=30).
+
+ smart-mdt-rs/src/explain/axp_deletion.rs | 142 ++++++++++++++++++++++-
+ smart-mdt-rs/src/explain/final_tree.rs   |  32 +++++-
+ smart-mdt-rs/src/explain/weak_axp.rs     | 187 ++++++++++++++++++++++++++++++-
+ 3 files changed, 349 insertions(+), 12 deletions(-)

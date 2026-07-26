@@ -1,4 +1,4 @@
-use super::Cnf;
+use super::{literals_are_in_range, Cnf};
 fn idx(l: i32) -> usize {
     let v = (l.unsigned_abs() as usize) - 1;
     2 * v + if l > 0 { 0 } else { 1 }
@@ -8,6 +8,9 @@ fn neg_idx(i: usize) -> usize {
 }
 /// Checks 2-SAT using implication graph and SCC. Unit clauses are supported.
 pub fn two_sat(num_vars: usize, cnf: &Cnf) -> bool {
+    if num_vars > usize::MAX / 2 || !literals_are_in_range(num_vars, cnf) {
+        return false;
+    }
     let n = 2 * num_vars;
     let mut g = vec![Vec::new(); n];
     let mut gr = vec![Vec::new(); n];

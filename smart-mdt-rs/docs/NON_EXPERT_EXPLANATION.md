@@ -4,4 +4,4 @@ Classical decision trees ask one question at a time. Multivariate decision trees
 
 This project implements a certificate-guided Rust learner for compact and explainable multivariate decision trees. The certified modes restrict split conditions to tractable logical families and compute subset-minimal abductive explanations by deletion-based weak AXp checking.
 
-The project does not prove the learner is optimal, does not prove all learned trees are globally best, does not prove every mixed-language explanation is polynomial, and does not formally verify the Rust implementation. Affine, tuned and empirical mixed modes are experimental and excluded from theorem-certified tables.
+The project does not prove the learner is optimal, does not prove all learned trees are globally best, does not certify arbitrary mixed-language paths, and does not formally verify the Rust implementation. Boolean affine paths and `smart_certified` trees whose every path passes compatibility validation are theorem-table eligible; tuned and empirical modes remain excluded.

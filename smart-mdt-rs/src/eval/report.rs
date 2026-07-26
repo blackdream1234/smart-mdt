@@ -1,4 +1,5 @@
 use crate::logic::{Backend, LanguageFamily};
+use std::collections::BTreeSet;
 /// Benchmark row with theorem metadata.
 #[derive(Clone, Debug)]
 pub struct ResultRow {
@@ -14,31 +15,272 @@ pub struct ResultRow {
     pub max_depth_reached: usize,
     pub mean_axp_length: f64,
     pub axp_time: f64,
+    pub axp_extraction_stage: String,
+    pub provisional_axp_evaluations: usize,
+    pub final_axp_rows: usize,
+    pub test_rows: usize,
+    pub axp_valid_count: usize,
+    pub axp_minimal_count: usize,
     pub theorem_certified: bool,
     pub language_family: LanguageFamily,
     pub backend: Backend,
+    /// Distinct theory states reached by root-to-leaf paths.
+    pub path_theory_state: String,
+    /// Distinct certified backends used by root-to-leaf paths.
+    pub path_backend: String,
+    /// Whether every root-to-leaf path passed theory-state validation.
+    pub path_certified: bool,
     pub git_sha: String,
     pub config: String,
     pub random_state: u64,
     pub n_runs: usize,
     pub train_test_split_protocol: String,
+    pub search_strategy: String,
+    pub score_profile: String,
+    pub candidate_beam_width: usize,
+    pub tree_beam_width: usize,
+    pub lookahead_depth: usize,
+    pub node_budget: usize,
+    pub pruning_enabled: bool,
+    pub nodes_before_prune: usize,
+    pub nodes_after_prune: usize,
+    pub leaves_before_prune: usize,
+    pub leaves_after_prune: usize,
+    pub literals_before_prune: usize,
+    pub literals_after_prune: usize,
+    pub validation_accuracy_before_prune: f64,
+    pub validation_accuracy_after_prune: f64,
+    pub validation_balanced_accuracy_before_prune: f64,
+    pub validation_balanced_accuracy_after_prune: f64,
+    pub validation_sensitivity_before_prune: f64,
+    pub validation_sensitivity_after_prune: f64,
+    pub validation_specificity_before_prune: f64,
+    pub validation_specificity_after_prune: f64,
+    pub validation_macro_f1_before_prune: f64,
+    pub validation_macro_f1_after_prune: f64,
+    pub validation_minority_recall_before_prune: f64,
+    pub validation_minority_recall_after_prune: f64,
+    pub validation_class_support: String,
+    pub pruning_root_reason: String,
+    pub pruning_reason_counts: String,
+    pub candidate_count: usize,
+    pub candidate_pruned_count: usize,
+    pub branch_and_bound_fallback_count: usize,
+    pub nodes_using_greedy_selection: usize,
+    pub nodes_using_selective_lookahead: usize,
+    pub branch_and_bound_activation_count: usize,
+    pub branch_and_bound_avoided_count: usize,
+    pub cache_activation_count: usize,
+    pub estimated_work_saved: usize,
+    pub predicate_mask_cache_hits: usize,
+    pub predicate_mask_cache_misses: usize,
+    pub candidate_cache_hits: usize,
+    pub candidate_cache_misses: usize,
+    pub subtree_cache_hits: usize,
+    pub subtree_cache_misses: usize,
+    pub parallel_threads: usize,
+    pub compatible_family_count: usize,
+    pub selected_family_counts: String,
+    pub path_violation_count: usize,
+    pub max_axp_length: usize,
+    pub total_fit_time: f64,
+    pub search_time: f64,
+    pub pruning_time: f64,
+    pub axp_rerank_time: f64,
+    pub empirical_fallback_used: bool,
+    pub incompatible_cached_subtree_reused: bool,
+    pub all_predicates_backend_allowed: bool,
+    pub theorem_rejection_reason: String,
 }
-/// True iff row is allowed in theorem-certified table.
+
+impl Default for ResultRow {
+    fn default() -> Self {
+        Self {
+            dataset: String::new(),
+            run: 0,
+            depth: 0,
+            method: String::new(),
+            accuracy: 0.0,
+            train_time: 0.0,
+            predict_time: 0.0,
+            tree_nodes: 0,
+            leaves: 0,
+            max_depth_reached: 0,
+            mean_axp_length: 0.0,
+            axp_time: 0.0,
+            axp_extraction_stage: String::new(),
+            provisional_axp_evaluations: 0,
+            final_axp_rows: 0,
+            test_rows: 0,
+            axp_valid_count: 0,
+            axp_minimal_count: 0,
+            theorem_certified: false,
+            language_family: LanguageFamily::Unary,
+            backend: Backend::None,
+            path_theory_state: String::new(),
+            path_backend: String::new(),
+            path_certified: false,
+            git_sha: String::new(),
+            config: String::new(),
+            random_state: 0,
+            n_runs: 0,
+            train_test_split_protocol: String::new(),
+            search_strategy: String::new(),
+            score_profile: String::new(),
+            candidate_beam_width: 0,
+            tree_beam_width: 0,
+            lookahead_depth: 0,
+            node_budget: 0,
+            pruning_enabled: false,
+            nodes_before_prune: 0,
+            nodes_after_prune: 0,
+            leaves_before_prune: 0,
+            leaves_after_prune: 0,
+            literals_before_prune: 0,
+            literals_after_prune: 0,
+            validation_accuracy_before_prune: 0.0,
+            validation_accuracy_after_prune: 0.0,
+            validation_balanced_accuracy_before_prune: 0.0,
+            validation_balanced_accuracy_after_prune: 0.0,
+            validation_sensitivity_before_prune: 0.0,
+            validation_sensitivity_after_prune: 0.0,
+            validation_specificity_before_prune: 0.0,
+            validation_specificity_after_prune: 0.0,
+            validation_macro_f1_before_prune: 0.0,
+            validation_macro_f1_after_prune: 0.0,
+            validation_minority_recall_before_prune: 0.0,
+            validation_minority_recall_after_prune: 0.0,
+            validation_class_support: String::new(),
+            pruning_root_reason: String::new(),
+            pruning_reason_counts: String::new(),
+            candidate_count: 0,
+            candidate_pruned_count: 0,
+            branch_and_bound_fallback_count: 0,
+            nodes_using_greedy_selection: 0,
+            nodes_using_selective_lookahead: 0,
+            branch_and_bound_activation_count: 0,
+            branch_and_bound_avoided_count: 0,
+            cache_activation_count: 0,
+            estimated_work_saved: 0,
+            predicate_mask_cache_hits: 0,
+            predicate_mask_cache_misses: 0,
+            candidate_cache_hits: 0,
+            candidate_cache_misses: 0,
+            subtree_cache_hits: 0,
+            subtree_cache_misses: 0,
+            parallel_threads: 0,
+            compatible_family_count: 0,
+            selected_family_counts: String::new(),
+            path_violation_count: 0,
+            max_axp_length: 0,
+            total_fit_time: 0.0,
+            search_time: 0.0,
+            pruning_time: 0.0,
+            axp_rerank_time: 0.0,
+            empirical_fallback_used: false,
+            incompatible_cached_subtree_reused: false,
+            all_predicates_backend_allowed: false,
+            theorem_rejection_reason: String::new(),
+        }
+    }
+}
+/// True iff row is allowed in the theorem-certified table.
+///
+/// Each certified method is bound to its one certified backend. Affine is
+/// admitted only with the GF(2) backend, so empirical affine (family
+/// `EmpiricalAffine`, backend `Affine`) is excluded even though it shares the
+/// `affine` method name.
 pub fn theorem_table_filter(r: &ResultRow) -> bool {
-    r.theorem_certified
-        && matches!(
-            r.method.as_str(),
-            "unary" | "horn" | "antihorn" | "square2cnf"
-        )
-        && r.language_family.theorem_table_allowed()
-        && matches!(
-            r.backend,
-            Backend::StructuralHorn | Backend::StructuralAntiHorn | Backend::TwoSat
-        )
-        && !matches!(
-            r.method.as_str(),
-            "affine" | "bestpn" | "best-certified" | "empirical-mixed" | "tuned-experimental"
-        )
+    if !r.theorem_certified
+        || !r.language_family.theorem_table_allowed()
+        || !r.path_certified
+        || r.path_violation_count != 0
+        || r.empirical_fallback_used
+        || r.incompatible_cached_subtree_reused
+        || !r.all_predicates_backend_allowed
+        || !r.theorem_rejection_reason.is_empty()
+        || r.axp_extraction_stage != "post_selection_final_tree"
+        || r.test_rows == 0
+        || r.final_axp_rows != r.test_rows
+        || r.axp_valid_count != r.final_axp_rows
+        || r.axp_minimal_count != r.final_axp_rows
+        || !path_metadata_is_valid(r)
+    {
+        return false;
+    }
+    match r.method.as_str() {
+        "unary" => {
+            matches!(r.language_family, LanguageFamily::Unary)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted"])
+        }
+        "horn" => {
+            matches!(r.language_family, LanguageFamily::Horn)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted", "horn"])
+        }
+        "antihorn" => {
+            matches!(r.language_family, LanguageFamily::AntiHorn)
+                && matches!(r.backend, Backend::StructuralAntiHorn)
+                && path_states_are_within(r, &["uncommitted", "antihorn"])
+        }
+        "square2cnf" => {
+            matches!(r.language_family, LanguageFamily::Square2Cnf)
+                && matches!(r.backend, Backend::TwoSat)
+                && path_states_are_within(r, &["uncommitted", "two_sat"])
+        }
+        "affine" => {
+            matches!(r.language_family, LanguageFamily::Affine)
+                && matches!(r.backend, Backend::Gf2Gaussian)
+                && path_states_are_within(r, &["uncommitted", "affine_gf2"])
+        }
+        "smart_certified" => {
+            matches!(r.language_family, LanguageFamily::SmartCertified)
+                && matches!(r.backend, Backend::PathCertified)
+        }
+        "cals" | "cals_compact_explain" => {
+            matches!(r.language_family, LanguageFamily::SmartCertified)
+                && matches!(r.backend, Backend::PathCertified)
+        }
+        _ => false,
+    }
+}
+
+fn path_states_are_within(r: &ResultRow, allowed: &[&str]) -> bool {
+    r.path_theory_state
+        .split('|')
+        .all(|state| allowed.contains(&state))
+}
+
+fn path_metadata_is_valid(r: &ResultRow) -> bool {
+    let state_parts = r.path_theory_state.split('|').collect::<Vec<_>>();
+    let backend_parts = r.path_backend.split('|').collect::<Vec<_>>();
+    if state_parts.iter().any(|state| state.is_empty())
+        || backend_parts.iter().any(|backend| backend.is_empty())
+        || state_parts.iter().copied().collect::<BTreeSet<_>>().len() != state_parts.len()
+        || backend_parts.iter().copied().collect::<BTreeSet<_>>().len() != backend_parts.len()
+    {
+        return false;
+    }
+
+    let expected_backends = state_parts
+        .iter()
+        .map(|state| match *state {
+            "uncommitted" | "horn" => Some("StructuralHorn"),
+            "antihorn" => Some("StructuralAntiHorn"),
+            "two_sat" => Some("TwoSat"),
+            "affine_gf2" => Some("Gf2Gaussian"),
+            _ => None,
+        })
+        .collect::<Option<BTreeSet<_>>>();
+    let actual_backends = backend_parts
+        .iter()
+        .map(|backend| match *backend {
+            "StructuralHorn" | "StructuralAntiHorn" | "TwoSat" | "Gf2Gaussian" => Some(*backend),
+            _ => None,
+        })
+        .collect::<Option<BTreeSet<_>>>();
+    expected_backends.is_some() && expected_backends == actual_backends
 }
 
 /// Benchmark warning row.
@@ -48,7 +290,16 @@ pub struct BenchmarkWarning {
     pub run: String,
     pub depth: String,
     pub method: String,
+    /// Number of benchmark rows represented by this warning.
+    pub affected_rows: usize,
+    /// Sorted, pipe-delimited run identifiers, or `all` for metadata warnings.
+    pub runs: String,
+    /// Sorted, pipe-delimited depth identifiers, or `all` for metadata warnings.
+    pub depths: String,
     pub warning_type: String,
+    /// Stable human-readable explanation of why the warning was emitted.
+    pub reason: String,
+    /// Backward-compatible alias retained in the benchmark CSV.
     pub message: String,
     pub value: String,
 }

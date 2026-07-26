@@ -56,6 +56,28 @@ fn debug_candidates_command_writes_csvs() {
 }
 
 #[test]
+fn unsupported_debug_node_path_is_rejected_instead_of_echoing_root_results() {
+    let mut c = cfg("horn_separable", "unary");
+    c.depth = 3;
+    c.node_path = "LRR".into();
+    c.output = std::env::temp_dir().join(format!(
+        "smart-mdt-debug-unsupported-path-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&c.output);
+    let error = run_debug_candidates(&c).unwrap_err();
+    assert!(format!("{error}").contains("supports only"));
+    assert!(!c.output.join("debug_candidates.csv").exists());
+}
+
+#[test]
+fn unknown_debug_method_is_rejected() {
+    let c = cfg("horn_separable", "typo");
+    let error = run_debug_candidates(&c).unwrap_err();
+    assert!(format!("{error}").contains("unknown certified method"));
+}
+
+#[test]
 fn unary_root_candidates_include_valid_non_empty_splits() {
     let c = cfg("horn_separable", "unary");
     let _ = fs::remove_dir_all(&c.output);
@@ -117,6 +139,15 @@ fn horn_learner_uses_non_constant_positive_gain_split_on_toy_fixture() {
         min_samples_leaf: 1,
         max_candidates_per_node: 64,
         beam_width: 32,
+        split_score: Default::default(),
+        branch_and_bound: Default::default(),
+        cache: Default::default(),
+        tree_search: Default::default(),
+        conditional_search: Default::default(),
+        parallel: Default::default(),
+        pruning: Default::default(),
+        adaptive_language: Default::default(),
+        axp_rerank: Default::default(),
         language_policy: LanguagePolicy::HornOnly,
         theorem_mode: true,
         random_seed: 42,
@@ -191,6 +222,15 @@ fn antihorn_learner_uses_non_constant_positive_gain_split_on_toy_fixture() {
         min_samples_leaf: 1,
         max_candidates_per_node: 64,
         beam_width: 32,
+        split_score: Default::default(),
+        branch_and_bound: Default::default(),
+        cache: Default::default(),
+        tree_search: Default::default(),
+        conditional_search: Default::default(),
+        parallel: Default::default(),
+        pruning: Default::default(),
+        adaptive_language: Default::default(),
+        axp_rerank: Default::default(),
         language_policy: LanguagePolicy::AntiHornOnly,
         theorem_mode: true,
         random_seed: 42,
@@ -267,6 +307,15 @@ fn square2cnf_learner_uses_non_constant_positive_gain_split_on_toy_fixture() {
         min_samples_leaf: 1,
         max_candidates_per_node: 64,
         beam_width: 32,
+        split_score: Default::default(),
+        branch_and_bound: Default::default(),
+        cache: Default::default(),
+        tree_search: Default::default(),
+        conditional_search: Default::default(),
+        parallel: Default::default(),
+        pruning: Default::default(),
+        adaptive_language: Default::default(),
+        axp_rerank: Default::default(),
         language_policy: LanguagePolicy::Square2CnfOnly,
         theorem_mode: true,
         random_seed: 42,

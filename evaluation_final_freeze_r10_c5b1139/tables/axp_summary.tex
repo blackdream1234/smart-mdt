@@ -1,0 +1,43 @@
+\begin{table}[htbp]
+\centering
+\caption{AXp distribution by method.}
+\label{tab:axp-distribution}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+Method & Rows & Mean AXp & Median AXp & AXp std. & Min. AXp & Max. AXp \\
+\midrule
+Unary & 920 & 3.927 & 3.728 & 1.531 & 0.000 & 9.618 \\
+Horn & 920 & 5.137 & 4.887 & 1.892 & 0.000 & 12.863 \\
+AntiHorn & 920 & 5.553 & 5.114 & 2.389 & 0.000 & 14.523 \\
+Square2CNF & 920 & 6.357 & 5.938 & 2.575 & 0.000 & 17.542 \\
+Boolean Affine/GF(2) & 920 & 7.897 & 7.717 & 2.896 & 0.000 & 20.000 \\
+SmartCertified & 920 & 4.184 & 3.907 & 1.531 & 0.000 & 10.673 \\
+CALS-MDT & 920 & 2.976 & 2.724 & 2.135 & 0.000 & 14.887 \\
+CompactExplain & 920 & 2.721 & 2.438 & 2.096 & 0.000 & 15.491 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Selected predicate-family usage.}
+\label{tab:axp-families}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{ll}
+\toprule
+Method & Family usage \\
+\midrule
+Unary & Unary:24028 \\
+Horn & Horn:23100 \\
+AntiHorn & AntiHorn:23224 \\
+Square2CNF & Square2Cnf:22911 \\
+Boolean Affine/GF(2) & Affine:23978 \\
+SmartCertified & Affine:1121 | AntiHorn:682 | Horn:2348 | Square2Cnf:150 | Unary:18556 \\
+CALS-MDT & Affine:354 | AntiHorn:586 | Horn:1586 | Square2Cnf:1871 | Unary:999 \\
+CompactExplain & Affine:281 | AntiHorn:414 | Horn:1063 | Square2Cnf:1720 | Unary:1179 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

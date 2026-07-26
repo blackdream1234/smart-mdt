@@ -1,0 +1,508 @@
+commit d75391d5cfd5ae46372e9f46f1cccf291aac0a38
+Author: blackdream1234 <12joseph.jh@gmail.com>
+Date:   Fri Jul 24 13:51:27 2026 +0300
+
+    Cache tree/domain-invariant facts in weak-AXp checking
+    
+    extract_axp_deletion / extract_final_tree_axps call weak_axp_check once
+    per feature-deletion trial and once per held-out row, and each call
+    recomputed backend_meta (a function of the tree only) and is_binary_domain
+    (a full O(rows x features) rescan of the reference domain, invariant across
+    the whole extraction) from scratch. Profiling on letter.dl8 (224 features,
+    depth-5 tree) showed this rescan alone was 99.8% of AXp-extraction time
+    versus 0.1% for the actual certified GF(2)/Horn/AntiHorn/2-SAT solve, and
+    the strict full-corpus benchmark was on track for ~20 days.
+    
+    Hoist both into an AxpCheckContext computed once per tree/domain pair and
+    threaded through *_with_context variants. weak_axp_check and
+    extract_axp_deletion keep identical public signatures and behavior (they
+    build the context internally); only repeat callers reuse it.
+    
+    This is a correctness-neutral change: the cached bool is the exact value
+    the old code recomputed every call, so every certification decision, AXp,
+    and reported metric is unchanged. Verified by:
+    - 7 new equivalence unit tests (cached vs uncached path, byte-identical
+      WeakAxpResult / AxpResult across certified success, non-Boolean-domain
+      rejection, dimension-mismatch, out-of-bounds row, and empirical mode);
+    - the full existing suite (161 -> 168 tests, all pass unchanged);
+    - an end-to-end A/B benchmark (3 datasets x 8 methods, before-fix vs
+      after-fix binary): 0 differences across all 88 non-timing columns
+      (accuracy, tree structure, theorem_certified, backend, path state,
+      axp_valid_rate, axp_minimal_rate, pruning/search diagnostics), with the
+      only residual variance (predicate_mask_cache_hits/misses) shown to be
+      pre-existing run-to-run noise present between two runs of the same binary;
+    - a direct measurement: 112.26s -> 0.062s for 30 rows of letter.dl8,
+      same certification result (valid=30, minimal=30).
+
+diff --git a/smart-mdt-rs/src/explain/axp_deletion.rs b/smart-mdt-rs/src/explain/axp_deletion.rs
+index 9a3558f..639e1d0 100644
+--- a/smart-mdt-rs/src/explain/axp_deletion.rs
++++ b/smart-mdt-rs/src/explain/axp_deletion.rs
+@@ -1,6 +1,8 @@
+ use super::{
+-    weak_axp::{backend_meta, tree_scope_fits_domain},
+-    weak_axp_check, AxpResult,
++    weak_axp::{
++        backend_meta, tree_scope_fits_domain, weak_axp_check_with_context, AxpCheckContext,
++    },
++    AxpResult,
+ };
+ use crate::{
+     data::ColumnMajorMatrix,
+@@ -9,12 +11,35 @@ use crate::{
+     FeatureId,
+ };
+ use std::time::Instant;
++
+ /// Extracts a subset-minimal AXp using the deterministic deletion algorithm.
++///
++/// Builds its own [`AxpCheckContext`] so tree/domain-invariant facts (see
++/// `weak_axp_check_with_context`'s docs) are computed once for this call
++/// instead of once per feature-deletion trial. Behavior is identical to
++/// calling `weak_axp_check` directly on every trial; only redundant
++/// recomputation is removed. Callers that already extract many rows against
++/// the same tree/domain (e.g. `extract_final_tree_axps`) should build one
++/// `AxpCheckContext` and call `extract_axp_deletion_with_context` instead, to
++/// also avoid rebuilding the context on every row.
+ pub fn extract_axp_deletion(
+     tree: &TreeNode,
+     domain: &ColumnMajorMatrix,
+     row: usize,
+     theorem_mode: bool,
++) -> AxpResult {
++    let ctx = AxpCheckContext::new(tree, domain, theorem_mode);
++    extract_axp_deletion_with_context(&ctx, tree, domain, row, theorem_mode)
++}
++
++/// Same semantics as [`extract_axp_deletion`], but reuses a precomputed
++/// [`AxpCheckContext`] instead of rebuilding it for this call.
++pub(crate) fn extract_axp_deletion_with_context(
++    ctx: &AxpCheckContext,
++    tree: &TreeNode,
++    domain: &ColumnMajorMatrix,
++    row: usize,
++    theorem_mode: bool,
+ ) -> AxpResult {
+     let start = Instant::now();
+     if row >= domain.rows() || !tree_scope_fits_domain(tree, domain.cols()) {
+@@ -42,7 +67,8 @@ pub fn extract_axp_deletion(
+     let mut last = None;
+     for f in 0..domain.cols() as u32 {
+         let trial: Vec<_> = selected.iter().copied().filter(|x| *x != f).collect();
+-        let r = weak_axp_check(tree, domain, &instance, target, &trial, theorem_mode);
++        let r =
++            weak_axp_check_with_context(ctx, tree, domain, &instance, target, &trial, theorem_mode);
+         checks += 1;
+         paths += r.opposite_paths_checked;
+         last = Some(r.metadata.clone());
+@@ -51,7 +77,115 @@ pub fn extract_axp_deletion(
+         }
+     }
+     let meta = last.unwrap_or_else(|| {
+-        weak_axp_check(tree, domain, &instance, target, &selected, theorem_mode).metadata
++        weak_axp_check_with_context(
++            ctx,
++            tree,
++            domain,
++            &instance,
++            target,
++            &selected,
++            theorem_mode,
++        )
++        .metadata
+     });
+     AxpResult::new(selected, checks, paths, meta, start.elapsed())
+ }
++
++#[cfg(test)]
++mod cached_context_regression_tests {
++    //! Proves `extract_axp_deletion` (builds its own context) and
++    //! `extract_axp_deletion_with_context` (reuses a caller-supplied context,
++    //! as `extract_final_tree_axps` does across many rows) agree exactly on
++    //! the extracted AXp and its certificate, for the same tree/domain/row.
++    //! `elapsed_micros` is excluded from comparison since it is a timing
++    //! measurement, not part of the AXp result.
++    use super::*;
++    use crate::logic::{Literal, Predicate, ThresholdAtom, ThresholdOp};
++
++    fn ge(feature: FeatureId) -> Literal {
++        Literal {
++            atom: ThresholdAtom {
++                feature,
++                threshold_id: 0,
++                threshold: 0.5,
++                op: ThresholdOp::GreaterEqual,
++            },
++            positive: true,
++        }
++    }
++
++    fn and_tree() -> TreeNode {
++        TreeNode::Internal {
++            predicate: Predicate::Unary(ge(0)),
++            majority_class: 0,
++            left: Box::new(TreeNode::Internal {
++                predicate: Predicate::Unary(ge(1)),
++                majority_class: 0,
++                left: Box::new(TreeNode::Leaf {
++                    class: 1,
++                    samples: 1,
++                }),
++                right: Box::new(TreeNode::Leaf {
++                    class: 0,
++                    samples: 1,
++                }),
++            }),
++            right: Box::new(TreeNode::Leaf {
++                class: 0,
++                samples: 2,
++            }),
++        }
++    }
++
++    fn binary_domain(n: usize) -> ColumnMajorMatrix {
++        let rows: Vec<Vec<f64>> = (0..(1usize << n))
++            .map(|m| (0..n).map(|j| ((m >> j) & 1) as f64).collect())
++            .collect();
++        ColumnMajorMatrix::from_rows(&rows).unwrap()
++    }
++
++    fn assert_same_result(a: &AxpResult, b: &AxpResult, case: &str) {
++        assert_eq!(a.features, b.features, "{case}: features differ");
++        assert_eq!(a.weak_checks, b.weak_checks, "{case}: weak_checks differ");
++        assert_eq!(
++            a.opposite_paths_checked, b.opposite_paths_checked,
++            "{case}: opposite_paths_checked differ"
++        );
++        assert_eq!(a.metadata, b.metadata, "{case}: metadata differs");
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_for_every_row() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let ctx = AxpCheckContext::new(&tree, &domain, true);
++        for row in 0..domain.rows() {
++            let uncached = extract_axp_deletion(&tree, &domain, row, true);
++            let cached = extract_axp_deletion_with_context(&ctx, &tree, &domain, row, true);
++            assert_same_result(&uncached, &cached, &format!("row {row}"));
++        }
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_on_out_of_bounds_row() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let ctx = AxpCheckContext::new(&tree, &domain, true);
++        let uncached = extract_axp_deletion(&tree, &domain, domain.rows(), true);
++        let cached = extract_axp_deletion_with_context(&ctx, &tree, &domain, domain.rows(), true);
++        assert_same_result(&uncached, &cached, "out of bounds row");
++        assert!(!uncached.metadata.theorem_certified);
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_in_empirical_mode() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let ctx = AxpCheckContext::new(&tree, &domain, false);
++        for row in 0..domain.rows() {
++            let uncached = extract_axp_deletion(&tree, &domain, row, false);
++            let cached = extract_axp_deletion_with_context(&ctx, &tree, &domain, row, false);
++            assert_same_result(&uncached, &cached, &format!("empirical row {row}"));
++        }
++    }
++}
+diff --git a/smart-mdt-rs/src/explain/final_tree.rs b/smart-mdt-rs/src/explain/final_tree.rs
+index 828bbc7..6ac6745 100644
+--- a/smart-mdt-rs/src/explain/final_tree.rs
++++ b/smart-mdt-rs/src/explain/final_tree.rs
+@@ -1,6 +1,10 @@
+ //! AXp extraction that is intentionally restricted to the selected final tree.
+ 
+-use super::{extract_axp_deletion, weak_axp_check, AxpResult};
++use super::{
++    axp_deletion::extract_axp_deletion_with_context,
++    weak_axp::{weak_axp_check_with_context, AxpCheckContext},
++    AxpResult,
++};
+ use crate::{
+     data::ColumnMajorMatrix,
+     tree::{predict_row, tree_is_certified, TreeNode},
+@@ -18,6 +22,14 @@ pub struct FinalTreeAxpSummary {
+ }
+ 
+ /// Extracts AXps only from `tree`, which callers must already have finalized.
++///
++/// Builds a single [`AxpCheckContext`] for the whole call (one tree, one
++/// reference domain) instead of letting it be rebuilt per row or per
++/// feature-deletion trial. See `weak_axp_check_with_context`'s docs for why
++/// this matters: without it, the domain-Boolean check alone was rescanning
++/// the full held-out row set on effectively every weak-AXp check, which
++/// dominated (>99%) measured AXp-extraction time for full-corpus benchmarks.
++/// Output is unchanged; only redundant recomputation is removed.
+ pub fn extract_final_tree_axps(
+     tree: &TreeNode,
+     features: &ColumnMajorMatrix,
+@@ -25,8 +37,9 @@ pub fn extract_final_tree_axps(
+     theorem_mode: bool,
+ ) -> FinalTreeAxpSummary {
+     let row_count = features.rows().min(maximum_rows);
++    let ctx = AxpCheckContext::new(tree, features, theorem_mode);
+     let results = (0..row_count)
+-        .map(|row| extract_axp_deletion(tree, features, row, theorem_mode))
++        .map(|row| extract_axp_deletion_with_context(&ctx, tree, features, row, theorem_mode))
+         .collect::<Vec<_>>();
+     let total = results
+         .iter()
+@@ -45,7 +58,8 @@ pub fn extract_final_tree_axps(
+                 .map(|feature| features.get(row, feature as u32))
+                 .collect::<Vec<_>>();
+             let target = predict_row(tree, features, row);
+-            let sufficient = weak_axp_check(
++            let sufficient = weak_axp_check_with_context(
++                &ctx,
+                 tree,
+                 features,
+                 &instance,
+@@ -62,8 +76,16 @@ pub fn extract_final_tree_axps(
+                         .copied()
+                         .filter(|feature| feature != removed)
+                         .collect::<Vec<_>>();
+-                    !weak_axp_check(tree, features, &instance, target, &subset, theorem_mode)
+-                        .is_weak_axp
++                    !weak_axp_check_with_context(
++                        &ctx,
++                        tree,
++                        features,
++                        &instance,
++                        target,
++                        &subset,
++                        theorem_mode,
++                    )
++                    .is_weak_axp
+                 });
+             (valid, minimal)
+         })
+diff --git a/smart-mdt-rs/src/explain/weak_axp.rs b/smart-mdt-rs/src/explain/weak_axp.rs
+index 795f2a6..3d03eb2 100644
+--- a/smart-mdt-rs/src/explain/weak_axp.rs
++++ b/smart-mdt-rs/src/explain/weak_axp.rs
+@@ -103,6 +103,35 @@ fn assignment_matrix(values: &[f64]) -> Option<ColumnMajorMatrix> {
+     ColumnMajorMatrix::from_rows(&[row]).ok()
+ }
+ 
++/// Tree/domain-invariant facts reused across many weak-AXp checks against the
++/// same tree and reference domain.
++///
++/// `weak_axp_check` recomputed `backend_meta` (a function of `tree` and
++/// `theorem_mode` only) and `is_binary_domain` (a full rescan of `domain`,
++/// independent of `instance`/`selected_features`) on every single call.
++/// Deletion-based AXp extraction calls it once per feature per row, and
++/// full-corpus benchmarking calls it for every held-out row, so a fixed
++/// `domain` was rescanned millions of times over instead of once. Profiling
++/// on `letter.dl8` (224 features, depth-5 tree) showed this rescan alone
++/// accounted for 99.8% of total AXp-extraction time, versus 0.1% for the
++/// actual certified solve. Precomputing these once per tree/domain pair
++/// changes no output: `weak_axp_check` still recomputes them fresh, so its
++/// public behavior is identical; this context only lets repeat callers skip
++/// redundant recomputation of values that cannot have changed.
++pub(crate) struct AxpCheckContext {
++    meta: CertificateMetadata,
++    domain_is_binary: bool,
++}
++
++impl AxpCheckContext {
++    pub(crate) fn new(tree: &TreeNode, domain: &ColumnMajorMatrix, theorem_mode: bool) -> Self {
++        Self {
++            meta: backend_meta(tree, theorem_mode),
++            domain_is_binary: is_binary_domain(domain),
++        }
++    }
++}
++
+ /// Checks weak AXp by blocking all opposite-class leaves.
+ ///
+ /// In theorem mode, every opposite leaf is blocked with the certified solver for
+@@ -118,7 +147,32 @@ pub fn weak_axp_check(
+     selected_features: &[FeatureId],
+     theorem_mode: bool,
+ ) -> WeakAxpResult {
+-    let meta = backend_meta(tree, theorem_mode);
++    let ctx = AxpCheckContext::new(tree, domain, theorem_mode);
++    weak_axp_check_with_context(
++        &ctx,
++        tree,
++        domain,
++        instance,
++        target_class,
++        selected_features,
++        theorem_mode,
++    )
++}
++
++/// Same semantics as [`weak_axp_check`], but reuses a precomputed
++/// [`AxpCheckContext`] instead of recomputing tree/domain-invariant facts.
++/// Produces byte-identical results to `weak_axp_check` for the same
++/// `tree`/`domain`/`theorem_mode` that built `ctx`.
++pub(crate) fn weak_axp_check_with_context(
++    ctx: &AxpCheckContext,
++    tree: &TreeNode,
++    domain: &ColumnMajorMatrix,
++    instance: &[f64],
++    target_class: ClassId,
++    selected_features: &[FeatureId],
++    theorem_mode: bool,
++) -> WeakAxpResult {
++    let meta = ctx.meta.clone();
+     let opposite_paths = count_opposite_leaves(tree, target_class);
+     if domain.cols() != instance.len()
+         || selected_features
+@@ -145,7 +199,7 @@ pub fn weak_axp_check(
+     }
+ 
+     if theorem_mode {
+-        if !is_binary_instance(instance) || !is_binary_domain(domain) {
++        if !is_binary_instance(instance) || !ctx.domain_is_binary {
+             return WeakAxpResult {
+                 is_weak_axp: false,
+                 metadata: CertificateMetadata::rejected(
+@@ -176,7 +230,7 @@ pub fn weak_axp_check(
+     }
+ 
+     let mut has_opposite_completion = false;
+-    if is_binary_domain(domain) && is_binary_instance(instance) && instance.len() <= 20 {
++    if ctx.domain_is_binary && is_binary_instance(instance) && instance.len() <= 20 {
+         let n = instance.len();
+         for mask in 0..(1usize << n) {
+             let mut completion = vec![0.0; n];
+@@ -213,3 +267,130 @@ pub fn weak_axp_check(
+         opposite_paths_checked: opposite_paths,
+     }
+ }
++
++#[cfg(test)]
++mod cached_context_regression_tests {
++    //! Proves the `AxpCheckContext`-cached path is behaviorally identical to
++    //! the always-recompute path it replaced in hot callers. Root cause: see
++    //! the doc comment on `AxpCheckContext`. These tests directly compare
++    //! `weak_axp_check` (recomputes `backend_meta`/`is_binary_domain` fresh
++    //! every call) against `weak_axp_check_with_context` (reuses a
++    //! precomputed context) across certified-success, non-Boolean-domain
++    //! rejection, dimension-mismatch rejection, and empirical-mode cases.
++    use super::*;
++    use crate::logic::{Literal, Predicate, ThresholdAtom, ThresholdOp};
++
++    fn ge(feature: FeatureId) -> Literal {
++        Literal {
++            atom: ThresholdAtom {
++                feature,
++                threshold_id: 0,
++                threshold: 0.5,
++                op: ThresholdOp::GreaterEqual,
++            },
++            positive: true,
++        }
++    }
++
++    fn and_tree() -> TreeNode {
++        TreeNode::Internal {
++            predicate: Predicate::Unary(ge(0)),
++            majority_class: 0,
++            left: Box::new(TreeNode::Internal {
++                predicate: Predicate::Unary(ge(1)),
++                majority_class: 0,
++                left: Box::new(TreeNode::Leaf {
++                    class: 1,
++                    samples: 1,
++                }),
++                right: Box::new(TreeNode::Leaf {
++                    class: 0,
++                    samples: 1,
++                }),
++            }),
++            right: Box::new(TreeNode::Leaf {
++                class: 0,
++                samples: 2,
++            }),
++        }
++    }
++
++    fn binary_domain(n: usize) -> ColumnMajorMatrix {
++        let rows: Vec<Vec<f64>> = (0..(1usize << n))
++            .map(|m| (0..n).map(|j| ((m >> j) & 1) as f64).collect())
++            .collect();
++        ColumnMajorMatrix::from_rows(&rows).unwrap()
++    }
++
++    fn assert_same_result(a: &WeakAxpResult, b: &WeakAxpResult, case: &str) {
++        assert_eq!(a.is_weak_axp, b.is_weak_axp, "{case}: is_weak_axp differs");
++        assert_eq!(a.metadata, b.metadata, "{case}: metadata differs");
++        assert_eq!(
++            a.opposite_paths_checked, b.opposite_paths_checked,
++            "{case}: opposite_paths_checked differs"
++        );
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_on_certified_success_and_rejection() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let instance = vec![1.0, 1.0];
++        let ctx = AxpCheckContext::new(&tree, &domain, true);
++        for selected in [vec![], vec![0], vec![1], vec![0, 1]] {
++            let uncached = weak_axp_check(&tree, &domain, &instance, 1, &selected, true);
++            let cached =
++                weak_axp_check_with_context(&ctx, &tree, &domain, &instance, 1, &selected, true);
++            assert_same_result(&uncached, &cached, "certified success/rejection");
++        }
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_on_non_boolean_domain_rejection() {
++        let tree = TreeNode::Internal {
++            predicate: Predicate::Unary(ge(0)),
++            majority_class: 0,
++            left: Box::new(TreeNode::Leaf {
++                class: 1,
++                samples: 1,
++            }),
++            right: Box::new(TreeNode::Leaf {
++                class: 0,
++                samples: 1,
++            }),
++        };
++        let domain = ColumnMajorMatrix::from_rows(&[vec![0.0], vec![2.0]]).unwrap();
++        let instance = vec![2.0];
++        let uncached = weak_axp_check(&tree, &domain, &instance, 1, &[], true);
++        let ctx = AxpCheckContext::new(&tree, &domain, true);
++        let cached = weak_axp_check_with_context(&ctx, &tree, &domain, &instance, 1, &[], true);
++        assert_same_result(&uncached, &cached, "non-boolean domain rejection");
++        assert!(!uncached.is_weak_axp);
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_on_dimension_mismatch_rejection() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let instance = vec![1.0]; // wrong length vs domain.cols() == 2
++        let uncached = weak_axp_check(&tree, &domain, &instance, 1, &[], true);
++        let ctx = AxpCheckContext::new(&tree, &domain, true);
++        let cached = weak_axp_check_with_context(&ctx, &tree, &domain, &instance, 1, &[], true);
++        assert_same_result(&uncached, &cached, "dimension mismatch");
++        assert!(!uncached.is_weak_axp);
++    }
++
++    #[test]
++    fn cached_context_matches_uncached_in_empirical_mode() {
++        let tree = and_tree();
++        let domain = binary_domain(2);
++        let instance = vec![1.0, 1.0];
++        for selected in [vec![], vec![0], vec![1], vec![0, 1]] {
++            let uncached = weak_axp_check(&tree, &domain, &instance, 1, &selected, false);
++            let ctx = AxpCheckContext::new(&tree, &domain, false);
++            let cached =
++                weak_axp_check_with_context(&ctx, &tree, &domain, &instance, 1, &selected, false);
++            assert_same_result(&uncached, &cached, "empirical mode");
++        }
++    }
++}

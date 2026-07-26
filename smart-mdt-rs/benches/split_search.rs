@@ -5,8 +5,11 @@ use smart_mdt_rs::{
         antihorn::generate_antihorn, horn::generate_horn, square2cnf::generate_square2cnf,
         unary::generate_unary,
     },
+    tree::{
+        learn, LanguagePolicy, LearnerConfig, ParallelConfig, TrainingContext, TreeSearchStrategy,
+    },
 };
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 fn main() {
     let rows: Vec<Vec<f64>> = (0..512)
@@ -67,4 +70,51 @@ fn main() {
         t.elapsed(),
         generate_square2cnf(&ds, 1, 16).len()
     );
+
+    let context = TrainingContext::new(Arc::new(ds.clone()));
+    for (name, parallel) in [
+        ("serial", ParallelConfig::disabled()),
+        (
+            "parallel",
+            ParallelConfig {
+                enabled: true,
+                ..ParallelConfig::default()
+            },
+        ),
+    ] {
+        let t = Instant::now();
+        let candidates = context
+            .generate_candidates_parallel(
+                &context.root_view(),
+                LanguagePolicy::SmartCertified,
+                1,
+                16,
+                &Default::default(),
+                &parallel,
+            )
+            .expect("candidate benchmark");
+        println!(
+            "{name} certified mask/scoring/generation: {:?} candidates={}",
+            t.elapsed(),
+            candidates.len()
+        );
+    }
+
+    for strategy in [TreeSearchStrategy::Greedy, TreeSearchStrategy::GlobalBeam] {
+        let mut config = LearnerConfig {
+            max_depth: 4,
+            language_policy: LanguagePolicy::SmartCertified,
+            ..LearnerConfig::default()
+        };
+        config.tree_search.strategy = strategy;
+        config.tree_search.tree_beam_width = 4;
+        config.tree_search.max_expansions = 32;
+        let t = Instant::now();
+        let tree = learn(&ds, &config).expect("training benchmark");
+        println!(
+            "{strategy:?} training: {:?} nodes={}",
+            t.elapsed(),
+            tree.nodes()
+        );
+    }
 }

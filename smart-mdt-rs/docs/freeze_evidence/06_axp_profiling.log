@@ -1,0 +1,10 @@
+# AXp extraction timing: before vs after the AxpCheckContext caching fix (commit d75391d)
+# dataset=letter.dl8 (20000 rows, 224 features), unary theorem-mode tree, 30 AXp rows
+
+## AFTER fix (current working tree, contains d75391d):
+dataset=../data/letter.dl8 rows=20000 cols=224 depth=5 tree_nodes=41
+axp_rows=30 wall=0.0396s per_row=0.00132s certified=true valid=30 minimal=30
+
+## BEFORE fix (src/explain/*.rs reverted to d75391d~1 = 1fbfa30):
+dataset=../data/letter.dl8 rows=20000 cols=224 depth=5 tree_nodes=41
+axp_rows=30 wall=69.2441s per_row=2.30814s certified=true valid=30 minimal=30

@@ -1,0 +1,39 @@
+# A/B output-equivalence: before-fix vs after-fix benchmark binary
+# 3 datasets (tic-tac-toe, IndiansDiabetes-bin, car-un) x 8 methods x depths 5,7 x 1 run
+# before = src/explain/*.rs at d75391d~1 (1fbfa30); after = d75391d
+# Method: stash the 3 explain files, run benchmark; restore, run again; diff CSVs.
+
+## Full comparison excluding only timing + git_sha columns:
+full_results.csv: 48 before rows, 48 after rows, 12 differences (excl. timing/git_sha)
+  - full_results.csv ('IndiansDiabetes-bin', '0', '5', 'cals') column=predicate_mask_cache_hits: before='20345' after='20377'
+  - full_results.csv ('IndiansDiabetes-bin', '0', '5', 'cals') column=predicate_mask_cache_misses: before='169026' after='168994'
+  - full_results.csv ('IndiansDiabetes-bin', '0', '7', 'cals') column=predicate_mask_cache_hits: before='26571' after='26587'
+  - full_results.csv ('IndiansDiabetes-bin', '0', '7', 'cals') column=predicate_mask_cache_misses: before='269132' after='269116'
+  - full_results.csv ('car-un', '0', '5', 'cals') column=predicate_mask_cache_hits: before='22993' after='22982'
+  - full_results.csv ('car-un', '0', '5', 'cals') column=predicate_mask_cache_misses: before='28905' after='28916'
+  - full_results.csv ('car-un', '0', '7', 'cals') column=predicate_mask_cache_hits: before='24783' after='24802'
+  - full_results.csv ('car-un', '0', '7', 'cals') column=predicate_mask_cache_misses: before='29117' after='29098'
+  - full_results.csv ('tic-tac-toe', '0', '5', 'cals') column=predicate_mask_cache_hits: before='23042' after='23043'
+  - full_results.csv ('tic-tac-toe', '0', '5', 'cals') column=predicate_mask_cache_misses: before='166816' after='166815'
+  - full_results.csv ('tic-tac-toe', '0', '7', 'cals') column=predicate_mask_cache_hits: before='28601' after='28575'
+  - full_results.csv ('tic-tac-toe', '0', '7', 'cals') column=predicate_mask_cache_misses: before='227788' after='227814'
+theorem_certified_results.csv: 48 before rows, 48 after rows, 12 differences (excl. timing/git_sha)
+  - theorem_certified_results.csv ('IndiansDiabetes-bin', '0', '5', 'cals') column=predicate_mask_cache_hits: before='20345' after='20377'
+  - theorem_certified_results.csv ('IndiansDiabetes-bin', '0', '5', 'cals') column=predicate_mask_cache_misses: before='169026' after='168994'
+  - theorem_certified_results.csv ('IndiansDiabetes-bin', '0', '7', 'cals') column=predicate_mask_cache_hits: before='26571' after='26587'
+  - theorem_certified_results.csv ('IndiansDiabetes-bin', '0', '7', 'cals') column=predicate_mask_cache_misses: before='269132' after='269116'
+  - theorem_certified_results.csv ('car-un', '0', '5', 'cals') column=predicate_mask_cache_hits: before='22993' after='22982'
+  - theorem_certified_results.csv ('car-un', '0', '5', 'cals') column=predicate_mask_cache_misses: before='28905' after='28916'
+  - theorem_certified_results.csv ('car-un', '0', '7', 'cals') column=predicate_mask_cache_hits: before='24783' after='24802'
+  - theorem_certified_results.csv ('car-un', '0', '7', 'cals') column=predicate_mask_cache_misses: before='29117' after='29098'
+  - theorem_certified_results.csv ('tic-tac-toe', '0', '5', 'cals') column=predicate_mask_cache_hits: before='23042' after='23043'
+  - theorem_certified_results.csv ('tic-tac-toe', '0', '5', 'cals') column=predicate_mask_cache_misses: before='166816' after='166815'
+  - theorem_certified_results.csv ('tic-tac-toe', '0', '7', 'cals') column=predicate_mask_cache_hits: before='28601' after='28575'
+  - theorem_certified_results.csv ('tic-tac-toe', '0', '7', 'cals') column=predicate_mask_cache_misses: before='227788' after='227814'
+empirical_results.csv: 0 before rows, 0 after rows, 0 differences (excl. timing/git_sha)
+
+FAIL: 24 non-timing differences found
+
+## Strict comparison also excluding pre-existing CALS cache-stat noise (predicate_mask_cache_hits/misses):
+rows compared: 48; columns compared: 88; DIFFERENCES: 0
+PASS: before-fix and after-fix produce identical results

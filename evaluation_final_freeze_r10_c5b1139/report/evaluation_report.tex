@@ -1,0 +1,189 @@
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{hyperref}
+\title{Smart-MDT Reproducible Research Evaluation}
+\author{Automatically generated evaluation framework}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+The evaluation contains 7360 benchmark rows, 46
+datasets, and 8 methods from
+\path{ rust_results_final_freeze_r10_1fbfa30 }. Repeated runs and depths are averaged within each
+dataset, and paired comparisons use datasets as independent blocks. Bootstrap
+intervals use 10000
+resamples, seed 20260718, and a 95.0\% confidence level.
+
+\section{Executive findings}
+\begin{itemize}
+  \item Best mean accuracy: CALS-MDT
+        (0.864820).
+  \item Smallest mean tree: CompactExplain
+        (11.124 nodes).
+  \item Fastest mean fit time: Unary
+        (0.047 seconds).
+  \item Best mean AXp length: CompactExplain
+        (2.721).
+
+  \item For CALS-MDT vs CompactExplain on Accuracy, the right-hand method was lower by 0.0047 (95\% bootstrap CI [-0.0073, -0.0022], raw p=0.001873, Holm-adjusted p=0.01124, paired Cohen's d=-0.523, medium effect).
+
+  \item For SmartCertified vs CALS-MDT on Accuracy, the right-hand method was higher by 0.0052 (95\% bootstrap CI [0.0014, 0.0092], raw p=0.005784, Holm-adjusted p=0.02892, paired Cohen's d=0.385, small effect).
+
+  \item For CALS-MDT vs CompactExplain on Fit time (seconds), the right-hand method was lower by 6.0334 (95\% bootstrap CI [-7.8811, -4.3309], raw p=2.842e-14, Holm-adjusted p=4.263e-13, paired Cohen's d=-0.965, large effect).
+
+  \item For SmartCertified vs CALS-MDT on Fit time (seconds), the right-hand method was higher by 8.1640 (95\% bootstrap CI [5.6094, 11.0623], raw p=5.446e-10, Holm-adjusted p=7.624e-09, paired Cohen's d=0.845, large effect).
+
+  \item For SmartCertified vs CALS-MDT on Tree nodes, the right-hand method was lower by 37.9587 (95\% bootstrap CI [-45.8178, -30.6804], raw p=3.522e-09, Holm-adjusted p=4.576e-08, paired Cohen's d=-1.411, large effect).
+
+  \item For SmartCertified vs CompactExplain on Tree nodes, the right-hand method was lower by 39.5652 (95\% bootstrap CI [-49.0461, -30.9891], raw p=3.52e-09, Holm-adjusted p=4.576e-08, paired Cohen's d=-1.254, large effect).
+
+\end{itemize}
+
+\section{Descriptive statistics}
+\input{../tables/statistics.tex}
+
+\section{Pairwise significance}
+Positive differences and effect sizes indicate that the right-hand method has
+the larger metric value. Accuracy is maximized; nodes, literals, AXp length,
+and runtime are minimized. Holm-adjusted p-values control family-wise error
+across the configured tests.
+\input{../tables/significance.tex}
+
+\section{Dataset analysis}
+The Nemenyi critical difference for average accuracy ranks is
+1.548.
+\input{../tables/dataset_summary.tex}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{../figures/dataset_win_histogram.pdf}
+\caption{Dataset winner counts.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.78\textwidth]{../figures/average_rank.pdf}
+\caption{Average dataset accuracy ranks.}
+\end{figure}
+
+\section{Performance and explanation figures}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/accuracy_boxplot.pdf}
+\caption{ Accuracy boxplot. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/accuracy_violin.pdf}
+\caption{ Accuracy violin plot. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/pareto.pdf}
+\caption{ Accuracy--complexity Pareto frontier. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/accuracy_vs_nodes.pdf}
+\caption{ Accuracy versus tree nodes. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/accuracy_vs_runtime.pdf}
+\caption{ Accuracy versus runtime. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/accuracy_vs_axp.pdf}
+\caption{ Accuracy versus AXp length. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/runtime_boxplot.pdf}
+\caption{ Runtime boxplot. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/runtime_log_boxplot.pdf}
+\caption{ Runtime boxplot on a logarithmic scale. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/nodes_boxplot.pdf}
+\caption{ Tree-node boxplot. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/axp_boxplot.pdf}
+\caption{ AXp-length boxplot. }
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/predicate_literals_boxplot.pdf}
+\caption{ Predicate-literal boxplot. }
+\end{figure}
+
+
+\section{Certification}
+\input{../tables/certification_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/certification_overview.pdf}
+\caption{Certification and integrity audit.}
+\end{figure}
+
+\section{Benchmark warnings}
+The warning summary contains 11 grouped records. The
+machine-readable table is available as
+\texttt{../tables/warnings\_summary.csv}.
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/warning_distribution.pdf}
+\caption{Benchmark warning distribution.}
+\end{figure}
+
+\section{Search analysis}
+\input{../tables/search_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/search_diagnostics.pdf}
+\caption{Greedy and selective-lookahead node selections.}
+\end{figure}
+
+\section{Pruning analysis}
+\input{../tables/pruning_summary.tex}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{../figures/pruning_diagnostics.pdf}
+\caption{Validation balanced accuracy before and after pruning.}
+\end{figure}
+
+\section{AXp analysis}
+\input{../tables/axp_summary.tex}
+
+\section{Discussion}
+Predictive performance, compactness, runtime, explanation length, and
+certification are reported separately. Paired Wilcoxon tests preserve the
+dataset blocks after averaging repeated runs and depths. Bootstrap intervals
+and effect sizes complement p-values with uncertainty and magnitude. The
+generated reproducibility manifest records input hashes, package versions,
+seeds, and output files.
+
+\end{document}

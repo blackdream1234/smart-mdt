@@ -1,0 +1,43 @@
+\documentclass[10pt]{article}
+\usepackage[a4paper,margin=1.6cm]{geometry}
+\usepackage{booktabs}
+\pagestyle{empty}
+\begin{document}
+\section*{Smart-MDT Executive Evaluation Summary}
+\textbf{Input:} {{ input_name_tex }} ({{ row_count }} rows,
+{{ dataset_count }} datasets).
+
+\begin{center}
+\begin{tabular}{llr}
+\toprule
+Objective & Best method & Result \\
+\midrule
+Accuracy & {{ best_accuracy.method_label_tex }} &
+{{ "%.6f"|format(best_accuracy.value) }} \\
+Smallest tree & {{ smallest_tree.method_label_tex }} &
+{{ "%.3f"|format(smallest_tree.value) }} nodes \\
+Fastest runtime & {{ fastest_runtime.method_label_tex }} &
+{{ "%.3f"|format(fastest_runtime.value) }} s \\
+Shortest AXp & {{ best_axp.method_label_tex }} &
+{{ "%.3f"|format(best_axp.value) }} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection*{Key statistical conclusions}
+\begin{itemize}
+{% for conclusion in key_conclusions_tex %}
+\item {{ conclusion }}
+{% endfor %}
+\end{itemize}
+
+\subsection*{Certification}
+{{ certification_sentence_tex }}
+
+Repeated runs and depths are averaged within each dataset. Tests are paired
+over independent dataset blocks. Confidence intervals use
+{{ bootstrap_resamples }} deterministic dataset-block bootstrap resamples with seed
+{{ seed }}. Reported effect sizes are the paired Cohen's d, consistent with the
+paired test; the full significance table also lists the unpaired Cliff's delta as
+a distributional reference, which is not a paired estimator.
+\end{document}

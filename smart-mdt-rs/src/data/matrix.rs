@@ -123,6 +123,22 @@ impl BitSet {
     pub fn count_ones(&self) -> usize {
         self.blocks.iter().map(|b| b.count_ones() as usize).sum()
     }
+    /// Backing words used by collision-safe search-state keys.
+    pub fn words(&self) -> &[u64] {
+        &self.blocks
+    }
+    /// Population count of the intersection without allocating a bitset.
+    pub fn intersection_count(&self, other: &Self) -> Result<usize> {
+        if self.len != other.len {
+            return Err(SmartMdtError::Dimension("bitset length mismatch".into()));
+        }
+        Ok(self
+            .blocks
+            .iter()
+            .zip(&other.blocks)
+            .map(|(a, b)| (a & b).count_ones() as usize)
+            .sum())
+    }
     /// Bitwise and. Returns a dimension error for mismatched lengths.
     pub fn and(&self, other: &Self) -> Result<Self> {
         self.zip(other, |a, b| a & b)
@@ -134,6 +150,10 @@ impl BitSet {
     /// Bitwise xor. Returns a dimension error for mismatched lengths.
     pub fn xor(&self, other: &Self) -> Result<Self> {
         self.zip(other, |a, b| a ^ b)
+    }
+    /// Set difference `self AND NOT other`.
+    pub fn and_not(&self, other: &Self) -> Result<Self> {
+        self.zip(other, |a, b| a & !b)
     }
     /// Bitwise complement within length.
     pub fn not(&self) -> Self {
