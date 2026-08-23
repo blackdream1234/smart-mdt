@@ -2,7 +2,10 @@ use super::{accuracy, theorem_table_filter, BenchmarkWarning, ResultRow};
 use crate::{
     data::{load_dl8_with_metadata, ColumnMajorMatrix, Dataset, DatasetMetadata},
     explain::extract_final_tree_axps,
-    logic::{Backend, LanguageFamily},
+    logic::{
+        Backend, ComplementCheck, DomainRegime, LanguageFamily, PathCheck, StructuralCheck,
+        TheoremCertificate, TheoremSource,
+    },
     tree::{
         learn_with_diagnostics, predict_all, tree_path_theory_metadata, CalsConfig, LanguagePolicy,
         LearnerConfig, TreeNode,
@@ -209,6 +212,17 @@ fn compatible_family_count_for_policy(policy: LanguagePolicy) -> usize {
 }
 
 fn predicates_backend_allowed(tree: &TreeNode, training: &Dataset) -> bool {
+    let boolean_domain = training.features.rows() > 0
+        && (0..training.features.cols() as u32).all(|feature| {
+            training
+                .features
+                .column(feature)
+                .iter()
+                .all(|value| *value == 0.0 || *value == 1.0)
+        });
+    if !boolean_domain {
+        return false;
+    }
     match tree {
         TreeNode::Leaf { .. } => true,
         TreeNode::Internal {
@@ -217,14 +231,115 @@ fn predicates_backend_allowed(tree: &TreeNode, training: &Dataset) -> bool {
             right,
             ..
         } => {
-            predicate.language().theorem_table_allowed()
-                && (!matches!(predicate, crate::logic::Predicate::Affine { .. })
-                    || crate::data::predicate_scope_is_boolean(&training.features, predicate))
+            predicate.theorem_certificate().is_some()
+                && predicate.language().theorem_table_allowed()
+                && crate::data::predicate_scope_is_boolean(&training.features, predicate)
                 && !matches!(predicate, crate::logic::Predicate::EmpiricalAffine { .. })
                 && predicates_backend_allowed(left, training)
                 && predicates_backend_allowed(right, training)
         }
     }
+}
+
+fn exact_certificate_for_row(
+    family: LanguageFamily,
+    backend: Backend,
+    tree: &TreeNode,
+    training: &Dataset,
+    path_certified: bool,
+) -> Option<TheoremCertificate> {
+    if !path_certified || !predicates_backend_allowed(tree, training) {
+        return None;
+    }
+    fn families(tree: &TreeNode, out: &mut BTreeSet<LanguageFamily>) {
+        if let TreeNode::Internal {
+            predicate,
+            left,
+            right,
+            ..
+        } = tree
+        {
+            out.insert(predicate.language());
+            families(left, out);
+            families(right, out);
+        }
+    }
+    let mut actual = BTreeSet::new();
+    families(tree, &mut actual);
+    let family_matches = match family {
+        LanguageFamily::Unary => actual.iter().all(|item| *item == LanguageFamily::Unary),
+        LanguageFamily::Horn => actual.iter().all(|item| *item == LanguageFamily::Horn),
+        LanguageFamily::AntiHorn => actual.iter().all(|item| *item == LanguageFamily::AntiHorn),
+        LanguageFamily::Square2Cnf => actual
+            .iter()
+            .all(|item| *item == LanguageFamily::Square2Cnf),
+        LanguageFamily::Affine => actual.iter().all(|item| *item == LanguageFamily::Affine),
+        LanguageFamily::SmartCertified => actual.iter().all(|item| {
+            matches!(
+                item,
+                LanguageFamily::Unary
+                    | LanguageFamily::Horn
+                    | LanguageFamily::AntiHorn
+                    | LanguageFamily::Square2Cnf
+                    | LanguageFamily::Affine
+            )
+        }),
+        _ => false,
+    };
+    if !family_matches {
+        return None;
+    }
+    let (theorem_id, structural_check, complement_check, path_check) = match family {
+        LanguageFamily::Unary => (
+            TheoremSource::UnaryBaseline,
+            StructuralCheck::UnaryRelation,
+            ComplementCheck::UnaryNegation,
+            PathCheck::HornCnfValidated,
+        ),
+        LanguageFamily::Horn => (
+            TheoremSource::Theorem3,
+            StructuralCheck::StarNestedHorn,
+            ComplementCheck::StarNestedConstruction,
+            PathCheck::HornCnfValidated,
+        ),
+        LanguageFamily::AntiHorn => (
+            TheoremSource::Theorem4,
+            StructuralCheck::StarNestedAntiHorn,
+            ComplementCheck::StarNestedConstruction,
+            PathCheck::AntiHornCnfValidated,
+        ),
+        LanguageFamily::Square2Cnf => (
+            TheoremSource::Theorem6,
+            // The historical/current generator emits exact Form I nodes.
+            StructuralCheck::Square2CnfFormI,
+            ComplementCheck::Square2CnfDualForm,
+            PathCheck::TwoCnfValidated,
+        ),
+        LanguageFamily::Affine => (
+            TheoremSource::Theorem5,
+            StructuralCheck::SingleGf2Equation,
+            ComplementCheck::Gf2RhsFlip,
+            PathCheck::Gf2SystemValidated,
+        ),
+        LanguageFamily::SmartCertified => (
+            TheoremSource::Proposition1,
+            StructuralCheck::PathCompatibleExactRelations,
+            ComplementCheck::PerNodeVerified,
+            PathCheck::PerPathTheoryValidated,
+        ),
+        _ => return None,
+    };
+    let certificate = TheoremCertificate {
+        domain_regime: DomainRegime::Boolean,
+        language_family: family,
+        theorem_id,
+        structural_check,
+        complement_check,
+        backend,
+        assumptions_supported: true,
+        path_check,
+    };
+    certificate.is_valid().then_some(certificate)
 }
 
 fn theorem_rejection_reason(
@@ -346,6 +461,14 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
 
                 let all_predicates_backend_allowed = predicates_backend_allowed(&tree, &train);
                 theorem_certified &= all_predicates_backend_allowed;
+                let exact_certificate = exact_certificate_for_row(
+                    declared_family,
+                    declared_backend,
+                    &tree,
+                    &train,
+                    path_certified,
+                );
+                theorem_certified &= exact_certificate.is_some();
                 let path_violation_count = usize::from(!path_certified);
                 let pruning = &diagnostics.pruning;
                 let nodes_before_prune = if pruning.enabled {
@@ -431,6 +554,27 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     theorem_certified,
                     language_family: declared_family,
                     backend: declared_backend,
+                    domain_regime: exact_certificate.as_ref().map_or_else(
+                        || "Unsupported".into(),
+                        |c| format!("{:?}", c.domain_regime),
+                    ),
+                    theorem_id: exact_certificate
+                        .as_ref()
+                        .map_or_else(String::new, |c| format!("{:?}", c.theorem_id)),
+                    structural_check: exact_certificate.as_ref().map_or_else(
+                        || "Unsupported".into(),
+                        |c| format!("{:?}", c.structural_check),
+                    ),
+                    complement_check: exact_certificate.as_ref().map_or_else(
+                        || "Unsupported".into(),
+                        |c| format!("{:?}", c.complement_check),
+                    ),
+                    assumptions_supported: exact_certificate
+                        .as_ref()
+                        .is_some_and(|c| c.assumptions_supported),
+                    path_check: exact_certificate
+                        .as_ref()
+                        .map_or_else(|| "Unsupported".into(), |c| format!("{:?}", c.path_check)),
                     path_theory_state,
                     path_backend,
                     path_certified,
@@ -518,6 +662,7 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     parallel_threads: diagnostics.parallel.configured_threads,
                     compatible_family_count,
                     selected_family_counts,
+                    selected_node_usage: diagnostics.adaptive_language.selected_nodes.clone(),
                     path_violation_count,
                     max_axp_length,
                     total_fit_time: train_time,
@@ -857,6 +1002,7 @@ fn write_all_outputs(
     write_csv(output.as_ref().join("axp_metadata.csv"), rows)?;
     write_csv(output.as_ref().join("tuning_diagnostics.csv"), &emp)?;
     write_optimization_diagnostics(output.as_ref(), rows)?;
+    write_cals_language_usage(output.as_ref().join("cals_language_usage.csv"), rows)?;
     fs::write(
         output.as_ref().join("README_RESULTS.md"),
         format!(
@@ -864,6 +1010,37 @@ fn write_all_outputs(
             rows.len()
         ),
     )?;
+    Ok(())
+}
+
+fn write_cals_language_usage(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
+    let mut out = String::from(
+        "dataset,run,depth,method,node_depth,family,predicate_arity,predicate_literals,gain,survived_pruning,is_root\n",
+    );
+    for row in rows.iter().filter(|row| {
+        matches!(
+            row.method.as_str(),
+            "smart_certified" | "cals" | "cals_compact_explain"
+        )
+    }) {
+        for node in &row.selected_node_usage {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                csv_escape(&row.dataset),
+                row.run,
+                row.depth,
+                row.method,
+                node.node_depth,
+                node.family,
+                node.predicate_arity,
+                node.predicate_literals,
+                node.gain,
+                node.survived_pruning,
+                node.is_root,
+            ));
+        }
+    }
+    fs::write(path, out)?;
     Ok(())
 }
 
@@ -1029,7 +1206,7 @@ fn axp_reporting_values(r: &ResultRow) -> (String, String, usize, usize) {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,test_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,test_rows,theorem_certified,language_family,backend,domain_regime,theorem_id,structural_check,complement_check,assumptions_supported,path_check,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -1064,6 +1241,12 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.theorem_certified.to_string(),
             format!("{:?}", r.language_family),
             format!("{:?}", r.backend),
+            r.domain_regime.clone(),
+            r.theorem_id.clone(),
+            r.structural_check.clone(),
+            r.complement_check.clone(),
+            r.assumptions_supported.to_string(),
+            r.path_check.clone(),
             csv_escape(&r.path_theory_state),
             csv_escape(&r.path_backend),
             r.path_certified.to_string(),

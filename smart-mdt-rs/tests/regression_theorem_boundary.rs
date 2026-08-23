@@ -25,6 +25,12 @@ fn theorem_table_excludes_forbidden() {
         theorem_certified: true,
         language_family: LanguageFamily::Horn,
         backend: Backend::StructuralHorn,
+        domain_regime: "Boolean".into(),
+        theorem_id: "Theorem3".into(),
+        structural_check: "StarNestedHorn".into(),
+        complement_check: "StarNestedConstruction".into(),
+        assumptions_supported: true,
+        path_check: "HornCnfValidated".into(),
         path_theory_state: "horn".into(),
         path_backend: "StructuralHorn".into(),
         path_certified: true,
@@ -45,6 +51,10 @@ fn theorem_table_excludes_forbidden() {
         backend: Backend::Gf2Gaussian,
         path_theory_state: "affine_gf2".into(),
         path_backend: "Gf2Gaussian".into(),
+        theorem_id: "Theorem5".into(),
+        structural_check: "SingleGf2Equation".into(),
+        complement_check: "Gf2RhsFlip".into(),
+        path_check: "Gf2SystemValidated".into(),
         ..good.clone()
     };
     assert!(theorem_table_filter(&certified_affine));

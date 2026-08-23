@@ -58,11 +58,26 @@ pub struct AdaptiveNodeDiagnostics {
     pub candidates_retained: usize,
 }
 
+/// Diagnostic-only record for one internal node in the selected final tree.
+/// It is populated after pruning/selection and never participates in scoring.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectedNodeLanguageUsage {
+    pub node_depth: usize,
+    pub family: String,
+    pub predicate_arity: usize,
+    pub predicate_literals: usize,
+    /// Information gain recomputed on the training rows reaching the final node.
+    pub gain: f64,
+    pub survived_pruning: bool,
+    pub is_root: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AdaptiveLanguageDiagnostics {
     pub nodes: Vec<AdaptiveNodeDiagnostics>,
     pub selected_family_counts: BTreeMap<String, usize>,
     pub selected_family_counts_by_depth: BTreeMap<usize, BTreeMap<String, usize>>,
+    pub selected_nodes: Vec<SelectedNodeLanguageUsage>,
 }
 
 /// Allocates exactly the available budget with deterministic largest-remainder

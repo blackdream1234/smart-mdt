@@ -1,4 +1,5 @@
 use crate::logic::{Backend, LanguageFamily};
+use crate::tree::SelectedNodeLanguageUsage;
 use std::collections::BTreeSet;
 /// Benchmark row with theorem metadata.
 #[derive(Clone, Debug)]
@@ -24,6 +25,13 @@ pub struct ResultRow {
     pub theorem_certified: bool,
     pub language_family: LanguageFamily,
     pub backend: Backend,
+    /// Exact structured theorem-certificate fields.
+    pub domain_regime: String,
+    pub theorem_id: String,
+    pub structural_check: String,
+    pub complement_check: String,
+    pub assumptions_supported: bool,
+    pub path_check: String,
     /// Distinct theory states reached by root-to-leaf paths.
     pub path_theory_state: String,
     /// Distinct certified backends used by root-to-leaf paths.
@@ -81,6 +89,8 @@ pub struct ResultRow {
     pub parallel_threads: usize,
     pub compatible_family_count: usize,
     pub selected_family_counts: String,
+    /// Diagnostic-only final nodes; never used by model selection.
+    pub selected_node_usage: Vec<SelectedNodeLanguageUsage>,
     pub path_violation_count: usize,
     pub max_axp_length: usize,
     pub total_fit_time: f64,
@@ -117,6 +127,12 @@ impl Default for ResultRow {
             theorem_certified: false,
             language_family: LanguageFamily::Unary,
             backend: Backend::None,
+            domain_regime: "Unsupported".into(),
+            theorem_id: String::new(),
+            structural_check: "Unsupported".into(),
+            complement_check: "Unsupported".into(),
+            assumptions_supported: false,
+            path_check: "Unsupported".into(),
             path_theory_state: String::new(),
             path_backend: String::new(),
             path_certified: false,
@@ -171,6 +187,7 @@ impl Default for ResultRow {
             parallel_threads: 0,
             compatible_family_count: 0,
             selected_family_counts: String::new(),
+            selected_node_usage: Vec::new(),
             path_violation_count: 0,
             max_axp_length: 0,
             total_fit_time: 0.0,
@@ -205,6 +222,8 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         || r.axp_valid_count != r.final_axp_rows
         || r.axp_minimal_count != r.final_axp_rows
         || !path_metadata_is_valid(r)
+        || r.domain_regime != "Boolean"
+        || !r.assumptions_supported
     {
         return false;
     }
@@ -212,38 +231,102 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         "unary" => {
             matches!(r.language_family, LanguageFamily::Unary)
                 && matches!(r.backend, Backend::StructuralHorn)
+                && exact_fields(
+                    r,
+                    "UnaryBaseline",
+                    "UnaryRelation",
+                    "UnaryNegation",
+                    "HornCnfValidated",
+                )
                 && path_states_are_within(r, &["uncommitted"])
         }
         "horn" => {
             matches!(r.language_family, LanguageFamily::Horn)
                 && matches!(r.backend, Backend::StructuralHorn)
+                && exact_fields(
+                    r,
+                    "Theorem3",
+                    "StarNestedHorn",
+                    "StarNestedConstruction",
+                    "HornCnfValidated",
+                )
                 && path_states_are_within(r, &["uncommitted", "horn"])
         }
         "antihorn" => {
             matches!(r.language_family, LanguageFamily::AntiHorn)
                 && matches!(r.backend, Backend::StructuralAntiHorn)
+                && exact_fields(
+                    r,
+                    "Theorem4",
+                    "StarNestedAntiHorn",
+                    "StarNestedConstruction",
+                    "AntiHornCnfValidated",
+                )
                 && path_states_are_within(r, &["uncommitted", "antihorn"])
         }
         "square2cnf" => {
             matches!(r.language_family, LanguageFamily::Square2Cnf)
                 && matches!(r.backend, Backend::TwoSat)
+                && r.theorem_id == "Theorem6"
+                && matches!(
+                    r.structural_check.as_str(),
+                    "Square2CnfEmpty"
+                        | "Square2CnfComplete"
+                        | "Square2CnfFormI"
+                        | "Square2CnfFormII"
+                        | "Square2CnfFormIII"
+                )
+                && r.complement_check == "Square2CnfDualForm"
+                && r.path_check == "TwoCnfValidated"
                 && path_states_are_within(r, &["uncommitted", "two_sat"])
         }
         "affine" => {
             matches!(r.language_family, LanguageFamily::Affine)
                 && matches!(r.backend, Backend::Gf2Gaussian)
+                && exact_fields(
+                    r,
+                    "Theorem5",
+                    "SingleGf2Equation",
+                    "Gf2RhsFlip",
+                    "Gf2SystemValidated",
+                )
                 && path_states_are_within(r, &["uncommitted", "affine_gf2"])
         }
         "smart_certified" => {
             matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
+                && adaptive_exact_fields(r)
         }
         "cals" | "cals_compact_explain" => {
             matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
+                && adaptive_exact_fields(r)
         }
         _ => false,
     }
+}
+
+fn exact_fields(
+    row: &ResultRow,
+    theorem: &str,
+    structural: &str,
+    complement: &str,
+    path: &str,
+) -> bool {
+    row.theorem_id == theorem
+        && row.structural_check == structural
+        && row.complement_check == complement
+        && row.path_check == path
+}
+
+fn adaptive_exact_fields(row: &ResultRow) -> bool {
+    exact_fields(
+        row,
+        "Proposition1",
+        "PathCompatibleExactRelations",
+        "PerNodeVerified",
+        "PerPathTheoryValidated",
+    )
 }
 
 fn path_states_are_within(r: &ResultRow, allowed: &[&str]) -> bool {

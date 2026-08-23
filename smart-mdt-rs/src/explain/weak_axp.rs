@@ -1,12 +1,19 @@
 use super::{path_blocking::certified_opposite_completion_exists, WeakAxpResult};
 use crate::{
     data::ColumnMajorMatrix,
-    logic::{Backend, CertificateMetadata, LanguageFamily, PathCertificate, PathTheoryState},
+    logic::{
+        Backend, CertificateMetadata, ComplementCheck, DomainRegime, LanguageFamily, PathCheck,
+        PathTheoryState, StructuralCheck, TheoremCertificate, TheoremSource,
+    },
     tree::{predict_row, tree_path_theory_states, TreeNode},
     ClassId, FeatureId,
 };
 
-pub(super) fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMetadata {
+pub(super) fn backend_meta(
+    tree: &TreeNode,
+    theorem_mode: bool,
+    assumptions_supported: bool,
+) -> CertificateMetadata {
     let Ok(states) = tree_path_theory_states(tree) else {
         return CertificateMetadata::rejected(
             theorem_mode,
@@ -14,46 +21,73 @@ pub(super) fn backend_meta(tree: &TreeNode, theorem_mode: bool) -> CertificateMe
             "incompatible theories occur on a root-to-leaf path",
         );
     };
-    if states.len() != 1 {
-        return CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::SmartCertified,
-            Backend::PathCertified,
-            PathCertificate::PathTheory,
-        );
-    }
-    match states[0] {
-        PathTheoryState::Uncommitted => CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::Unary,
-            Backend::StructuralHorn,
-            PathCertificate::HornCnf,
-        ),
-        PathTheoryState::Horn => CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::Horn,
-            Backend::StructuralHorn,
-            PathCertificate::HornCnf,
-        ),
-        PathTheoryState::AntiHorn => CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::AntiHorn,
-            Backend::StructuralAntiHorn,
-            PathCertificate::AntiHornCnf,
-        ),
-        PathTheoryState::TwoSat => CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::Square2Cnf,
-            Backend::TwoSat,
-            PathCertificate::TwoCnf,
-        ),
-        PathTheoryState::AffineGf2 => CertificateMetadata::new(
-            theorem_mode,
-            LanguageFamily::Affine,
-            Backend::Gf2Gaussian,
-            PathCertificate::AffineGf2,
-        ),
-    }
+    let (language_family, theorem_id, structural_check, complement_check, backend, path_check) =
+        if states.len() != 1 {
+            (
+                LanguageFamily::SmartCertified,
+                TheoremSource::Proposition1,
+                StructuralCheck::PathCompatibleExactRelations,
+                ComplementCheck::PerNodeVerified,
+                Backend::PathCertified,
+                PathCheck::PerPathTheoryValidated,
+            )
+        } else {
+            match states[0] {
+                PathTheoryState::Uncommitted => (
+                    LanguageFamily::Unary,
+                    TheoremSource::UnaryBaseline,
+                    StructuralCheck::UnaryRelation,
+                    ComplementCheck::UnaryNegation,
+                    Backend::StructuralHorn,
+                    PathCheck::HornCnfValidated,
+                ),
+                PathTheoryState::Horn => (
+                    LanguageFamily::Horn,
+                    TheoremSource::Theorem3,
+                    StructuralCheck::StarNestedHorn,
+                    ComplementCheck::StarNestedConstruction,
+                    Backend::StructuralHorn,
+                    PathCheck::HornCnfValidated,
+                ),
+                PathTheoryState::AntiHorn => (
+                    LanguageFamily::AntiHorn,
+                    TheoremSource::Theorem4,
+                    StructuralCheck::StarNestedAntiHorn,
+                    ComplementCheck::StarNestedConstruction,
+                    Backend::StructuralAntiHorn,
+                    PathCheck::AntiHornCnfValidated,
+                ),
+                PathTheoryState::TwoSat => (
+                    LanguageFamily::Square2Cnf,
+                    TheoremSource::Theorem6,
+                    StructuralCheck::Square2CnfFormI,
+                    ComplementCheck::Square2CnfDualForm,
+                    Backend::TwoSat,
+                    PathCheck::TwoCnfValidated,
+                ),
+                PathTheoryState::AffineGf2 => (
+                    LanguageFamily::Affine,
+                    TheoremSource::Theorem5,
+                    StructuralCheck::SingleGf2Equation,
+                    ComplementCheck::Gf2RhsFlip,
+                    Backend::Gf2Gaussian,
+                    PathCheck::Gf2SystemValidated,
+                ),
+            }
+        };
+    CertificateMetadata::from_theorem(
+        theorem_mode,
+        TheoremCertificate {
+            domain_regime: DomainRegime::Boolean,
+            language_family,
+            theorem_id,
+            structural_check,
+            complement_check,
+            backend,
+            assumptions_supported,
+            path_check,
+        },
+    )
 }
 
 fn count_opposite_leaves(tree: &TreeNode, target: ClassId) -> usize {
@@ -118,7 +152,7 @@ pub fn weak_axp_check(
     selected_features: &[FeatureId],
     theorem_mode: bool,
 ) -> WeakAxpResult {
-    let meta = backend_meta(tree, theorem_mode);
+    let mut meta = backend_meta(tree, theorem_mode, false);
     let opposite_paths = count_opposite_leaves(tree, target_class);
     if domain.cols() != instance.len()
         || selected_features
@@ -137,14 +171,6 @@ pub fn weak_axp_check(
         };
     }
     if theorem_mode && !meta.theorem_certified {
-        return WeakAxpResult {
-            is_weak_axp: false,
-            metadata: meta,
-            opposite_paths_checked: opposite_paths,
-        };
-    }
-
-    if theorem_mode {
         if !is_binary_instance(instance) || !is_binary_domain(domain) {
             return WeakAxpResult {
                 is_weak_axp: false,
@@ -153,6 +179,14 @@ pub fn weak_axp_check(
                     meta.language_family,
                     "theorem AXp checking requires a non-empty Boolean reference domain and in-bounds tree scope",
                 ),
+                opposite_paths_checked: opposite_paths,
+            };
+        }
+        meta = backend_meta(tree, theorem_mode, true);
+        if !meta.theorem_certified {
+            return WeakAxpResult {
+                is_weak_axp: false,
+                metadata: meta,
                 opposite_paths_checked: opposite_paths,
             };
         }

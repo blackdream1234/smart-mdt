@@ -111,6 +111,12 @@ fn cals_benchmark_method_is_theorem_admissible() {
         "parallel_threads",
         "compatible_family_count",
         "selected_family_counts",
+        "domain_regime",
+        "theorem_id",
+        "structural_check",
+        "complement_check",
+        "assumptions_supported",
+        "path_check",
         "path_violation_count",
         "max_axp_length",
         "total_fit_time",
@@ -129,9 +135,26 @@ fn cals_benchmark_method_is_theorem_admissible() {
         "cache_diagnostics.csv",
         "family_budget_diagnostics.csv",
         "beam_diagnostics.csv",
+        "cals_language_usage.csv",
     ] {
         assert!(output.join(artifact).exists(), "missing {artifact}");
     }
+    let usage = fs::read_to_string(output.join("cals_language_usage.csv")).unwrap();
+    let usage_header = usage.lines().next().unwrap();
+    for required in [
+        "node_depth",
+        "family",
+        "predicate_arity",
+        "predicate_literals",
+        "survived_pruning",
+        "is_root",
+    ] {
+        assert!(
+            usage_header.split(',').any(|column| column == required),
+            "missing {required}"
+        );
+    }
+    // A constant final tree has no selected predicate nodes, so header-only is valid.
     let _ = fs::remove_dir_all(base);
 }
 
