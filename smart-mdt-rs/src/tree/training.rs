@@ -386,7 +386,9 @@ impl TrainingContext {
 
     pub fn record_selected_tree(&self, tree: &crate::tree::TreeNode) {
         fn visit(
+            context: &TrainingContext,
             tree: &crate::tree::TreeNode,
+            rows: &BitSet,
             depth: usize,
             diagnostics: &mut AdaptiveLanguageDiagnostics,
         ) {
@@ -397,6 +399,25 @@ impl TrainingContext {
                 ..
             } = tree
             {
+                let full_mask = predicate_mask(&context.dataset.features, predicate);
+                let true_rows = rows
+                    .and(&full_mask)
+                    .expect("final-tree mask dimensions must match");
+                let false_rows = rows
+                    .and_not(&full_mask)
+                    .expect("final-tree mask dimensions must match");
+                let counts = |mask: &BitSet| {
+                    context
+                        .class_masks
+                        .iter()
+                        .map(|class| {
+                            mask.intersection_count(class)
+                                .expect("final-tree class-mask dimensions must match")
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let gain =
+                    information_gain(&counts(rows), &counts(&true_rows), &counts(&false_rows));
                 let family = format!("{:?}", predicate.language());
                 *diagnostics
                     .selected_family_counts
@@ -408,8 +429,19 @@ impl TrainingContext {
                     .or_default()
                     .entry(family)
                     .or_default() += 1;
-                visit(left, depth + 1, diagnostics);
-                visit(right, depth + 1, diagnostics);
+                diagnostics
+                    .selected_nodes
+                    .push(crate::tree::adaptive::SelectedNodeLanguageUsage {
+                        node_depth: depth,
+                        family: format!("{:?}", predicate.language()),
+                        predicate_arity: predicate.scope_features().len(),
+                        predicate_literals: predicate.arity(),
+                        gain,
+                        survived_pruning: true,
+                        is_root: depth == 0,
+                    });
+                visit(context, left, &true_rows, depth + 1, diagnostics);
+                visit(context, right, &false_rows, depth + 1, diagnostics);
             }
         }
         let mut diagnostics = self
@@ -418,7 +450,14 @@ impl TrainingContext {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         diagnostics.selected_family_counts.clear();
         diagnostics.selected_family_counts_by_depth.clear();
-        visit(tree, 0, &mut diagnostics);
+        diagnostics.selected_nodes.clear();
+        visit(
+            self,
+            tree,
+            &BitSet::ones(self.dataset.labels.len()),
+            0,
+            &mut diagnostics,
+        );
     }
 
     pub fn record_branch_and_bound(&self, current: &BranchAndBoundDiagnostics) {

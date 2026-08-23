@@ -1,0 +1,29 @@
+{
+  "all_datasets_boolean": true,
+  "authoritative": true,
+  "benchmark_commit": [
+    "1fbfa30"
+  ],
+  "datasets": 46,
+  "depths": [
+    5,
+    7
+  ],
+  "methods": [
+    "unary",
+    "horn",
+    "antihorn",
+    "square2cnf",
+    "affine",
+    "smart_certified",
+    "cals",
+    "cals_compact_explain"
+  ],
+  "regeneration_required": false,
+  "rows": 7360,
+  "runs": 10,
+  "source_directory": "rust_results_final_freeze_r10_1fbfa30",
+  "split_protocols": [
+    "deterministic_hash_70_30_first_label"
+  ]
+}

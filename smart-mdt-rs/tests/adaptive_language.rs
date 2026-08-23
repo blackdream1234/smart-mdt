@@ -2,9 +2,9 @@ use smart_mdt_rs::{
     data::{ColumnMajorMatrix, Dataset},
     logic::{LanguageFamily, PathTheoryState},
     tree::{
-        allocate_family_budgets, learn, tree_is_certified, AdaptiveLanguageConfig,
-        CandidateGenerationConfig, FamilyPilotMetrics, LanguagePolicy, LearnerConfig, NodeView,
-        ParallelConfig, TrainingContext,
+        allocate_family_budgets, learn, learn_with_diagnostics, tree_is_certified,
+        AdaptiveLanguageConfig, CandidateGenerationConfig, FamilyPilotMetrics, LanguagePolicy,
+        LearnerConfig, NodeView, ParallelConfig, TrainingContext,
     },
 };
 use std::sync::Arc;
@@ -138,7 +138,7 @@ fn disabled_adaptation_reproduces_fixed_allocation_and_enabled_tree_is_certified
     )
     .unwrap();
     assert_eq!(fixed, disabled);
-    let adaptive = learn(
+    let (adaptive, diagnostics) = learn_with_diagnostics(
         &data,
         &LearnerConfig {
             adaptive_language: AdaptiveLanguageConfig {
@@ -152,6 +152,12 @@ fn disabled_adaptation_reproduces_fixed_allocation_and_enabled_tree_is_certified
     )
     .unwrap();
     assert!(tree_is_certified(&adaptive));
+    let selected = &diagnostics.adaptive_language.selected_nodes;
+    assert!(!selected.is_empty());
+    assert!(selected[0].is_root);
+    assert_eq!(selected[0].node_depth, 0);
+    assert!(selected.iter().all(|node| node.gain.is_finite()));
+    assert!(selected.iter().any(|node| node.gain > 0.0));
 }
 
 #[test]

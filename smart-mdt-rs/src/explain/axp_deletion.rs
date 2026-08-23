@@ -18,7 +18,7 @@ pub fn extract_axp_deletion(
 ) -> AxpResult {
     let start = Instant::now();
     if row >= domain.rows() || !tree_scope_fits_domain(tree, domain.cols()) {
-        let meta = backend_meta(tree, theorem_mode);
+        let meta = backend_meta(tree, theorem_mode, false);
         let reason = if row >= domain.rows() {
             "AXp extraction row is out of bounds"
         } else {

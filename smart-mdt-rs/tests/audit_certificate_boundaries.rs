@@ -47,7 +47,7 @@ fn stump(predicate: Predicate) -> TreeNode {
 }
 
 #[test]
-fn malformed_structural_predicates_cannot_claim_certification() {
+fn malformed_structural_predicates_fail_closed_and_affine_normalizes() {
     let malformed_horn = Predicate::HornClause(vec![literal(0, true), literal(1, true)]);
     assert!(!malformed_horn.certificate(true).theorem_certified);
     assert!(!tree_is_certified(&stump(malformed_horn)));
@@ -56,12 +56,14 @@ fn malformed_structural_predicates_cannot_claim_certification() {
     assert!(!malformed_antihorn.certificate(true).theorem_certified);
     assert!(!tree_is_certified(&stump(malformed_antihorn)));
 
-    let malformed_affine = Predicate::Affine {
-        literals: vec![literal(1, true), literal(0, true)],
+    // Input ordering is not a theorem violation: the exact representation
+    // sorts variables and cancels duplicates modulo two.
+    let normalized_affine = Predicate::Affine {
+        literals: vec![literal(1, true), literal(0, true), literal(1, true)],
         rhs: false,
     };
-    assert!(!malformed_affine.certificate(true).theorem_certified);
-    assert!(!tree_is_certified(&stump(malformed_affine)));
+    assert!(normalized_affine.certificate(true).theorem_certified);
+    assert!(tree_is_certified(&stump(normalized_affine)));
 }
 
 #[test]
@@ -74,13 +76,19 @@ fn mismatched_certificate_metadata_triples_are_not_theorem_certified() {
     );
     assert!(!mismatched.theorem_certified);
 
-    let matched = CertificateMetadata::new(
+    let names_only = CertificateMetadata::new(
         true,
         LanguageFamily::Horn,
         Backend::StructuralHorn,
         PathCertificate::HornCnf,
     );
-    assert!(matched.theorem_certified);
+    assert!(!names_only.theorem_certified);
+    assert!(names_only.theorem_certificate.is_none());
+
+    let structurally_checked =
+        Predicate::HornClause(vec![literal(0, false), literal(1, true)]).certificate(true);
+    assert!(structurally_checked.theorem_certified);
+    assert!(structurally_checked.theorem_certificate.is_some());
 
     let matching_backend_outside_theorem_mode = CertificateMetadata::new(
         false,

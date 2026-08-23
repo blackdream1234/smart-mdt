@@ -219,6 +219,12 @@ fn smart_row(path_certified: bool) -> ResultRow {
         theorem_certified: path_certified,
         language_family: LanguageFamily::SmartCertified,
         backend: Backend::PathCertified,
+        domain_regime: "Boolean".into(),
+        theorem_id: "Proposition1".into(),
+        structural_check: "PathCompatibleExactRelations".into(),
+        complement_check: "PerNodeVerified".into(),
+        assumptions_supported: true,
+        path_check: "PerPathTheoryValidated".into(),
         path_theory_state: if path_certified {
             "horn|affine_gf2".into()
         } else {

@@ -1,6 +1,11 @@
-use super::{Backend, CertificateMetadata, LanguageFamily, Literal, PathCertificate};
+use super::{
+    classify_square_2cnf, classify_star_nested_antihorn, classify_star_nested_horn, Backend,
+    BooleanFormula, BooleanLiteral, CertificateMetadata, ComplementCheck, DomainRegime,
+    LanguageFamily, Literal, PathCertificate, PathCheck, SingleGf2Equation, Square2CnfForm,
+    StructuralCheck, TheoremCertificate, TheoremSource,
+};
 use crate::{data::ColumnMajorMatrix, FeatureId};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 /// Split predicate with certificate-first metadata.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Predicate {
@@ -28,29 +33,7 @@ impl Predicate {
     /// Whether the variant's contents satisfy the syntactic assumptions of
     /// its advertised certified backend.
     pub(crate) fn certificate_shape_is_valid(&self) -> bool {
-        match self {
-            Self::Unary(_) | Self::Square2Cnf { .. } => true,
-            Self::HornClause(literals) => normalized_boolean_clause_polarities(literals)
-                .is_none_or(|polarities| {
-                    polarities.into_iter().filter(|positive| *positive).count() <= 1
-                }),
-            Self::AntiHornClause(literals) => normalized_boolean_clause_polarities(literals)
-                .is_none_or(|polarities| {
-                    polarities.into_iter().filter(|positive| !*positive).count() <= 1
-                }),
-            Self::Affine { literals, .. } => {
-                literals.len() <= 128
-                    && literals.iter().all(|literal| {
-                        literal.positive
-                            && literal.atom.op == super::ThresholdOp::GreaterEqual
-                            && literal.atom.threshold == 0.5
-                    })
-                    && literals
-                        .windows(2)
-                        .all(|pair| pair[0].atom.feature < pair[1].atom.feature)
-            }
-            Self::EmpiricalAffine { .. } => false,
-        }
+        self.theorem_certificate().is_some()
     }
 
     /// Evaluates predicate on a row.
@@ -101,22 +84,22 @@ impl Predicate {
     }
     /// Certificate metadata.
     pub fn certificate(&self, theorem_mode: bool) -> CertificateMetadata {
-        if !self.certificate_shape_is_valid() && !matches!(self, Self::EmpiricalAffine { .. }) {
-            return CertificateMetadata::rejected(
+        if matches!(self, Self::EmpiricalAffine { .. }) {
+            return CertificateMetadata::new(
                 theorem_mode,
-                self.language(),
-                "predicate does not satisfy its advertised certificate shape",
+                LanguageFamily::EmpiricalAffine,
+                Backend::Affine,
+                PathCertificate::Empirical,
             );
         }
-        let pc = match self.backend() {
-            Backend::StructuralHorn => PathCertificate::HornCnf,
-            Backend::StructuralAntiHorn => PathCertificate::AntiHornCnf,
-            Backend::TwoSat => PathCertificate::TwoCnf,
-            Backend::Gf2Gaussian => PathCertificate::AffineGf2,
-            Backend::Affine => PathCertificate::Empirical,
-            _ => PathCertificate::Unsupported,
-        };
-        CertificateMetadata::new(theorem_mode, self.language(), self.backend(), pc)
+        match self.theorem_certificate() {
+            Some(certificate) => CertificateMetadata::from_theorem(theorem_mode, certificate),
+            None => CertificateMetadata::rejected(
+                theorem_mode,
+                self.language(),
+                "predicate structure or complement is outside the exact theorem class",
+            ),
+        }
     }
     /// Predicate complexity as literal count.
     pub fn arity(&self) -> usize {
@@ -164,29 +147,147 @@ impl Predicate {
             _ => None,
         }
     }
-}
 
-/// Effective propositional polarities after evaluating threshold literals on
-/// the certified Boolean domain. `None` denotes a tautological clause.
-fn normalized_boolean_clause_polarities(literals: &[Literal]) -> Option<Vec<bool>> {
-    let mut normalized = BTreeMap::<FeatureId, bool>::new();
-    for literal in literals {
-        let at_zero = literal.eval_value(0.0);
-        let at_one = literal.eval_value(1.0);
-        match (at_zero, at_one) {
-            (true, true) => return None,
-            (false, false) => {}
-            (false, true) | (true, false) => {
-                let positive = at_one;
-                if normalized
-                    .get(&literal.atom.feature)
-                    .is_some_and(|existing| *existing != positive)
-                {
+    /// Builds a relation-level certificate for the explicitly Boolean
+    /// interpretation.  Callers applying a tree to data must additionally
+    /// prove that the actual feature domain is Boolean.
+    pub fn theorem_certificate(&self) -> Option<TheoremCertificate> {
+        let (theorem_id, structural_check, complement_check, path_check) = match self {
+            Self::Unary(literal) => {
+                boolean_formula_from_clauses([std::slice::from_ref(literal)]);
+                (
+                    TheoremSource::UnaryBaseline,
+                    StructuralCheck::UnaryRelation,
+                    ComplementCheck::UnaryNegation,
+                    PathCheck::HornCnfValidated,
+                )
+            }
+            Self::HornClause(literals) => {
+                let formula = boolean_formula_from_clauses([literals.as_slice()]);
+                let witness = classify_star_nested_horn(&formula)?;
+                witness.complement()?;
+                (
+                    TheoremSource::Theorem3,
+                    StructuralCheck::StarNestedHorn,
+                    ComplementCheck::StarNestedConstruction,
+                    PathCheck::HornCnfValidated,
+                )
+            }
+            Self::AntiHornClause(literals) => {
+                let formula = boolean_formula_from_clauses([literals.as_slice()]);
+                let witness = classify_star_nested_antihorn(&formula)?;
+                witness.complement()?;
+                (
+                    TheoremSource::Theorem4,
+                    StructuralCheck::StarNestedAntiHorn,
+                    ComplementCheck::StarNestedConstruction,
+                    PathCheck::AntiHornCnfValidated,
+                )
+            }
+            Self::Square2Cnf { a, b, c, d } => {
+                let formula = boolean_formula_from_clauses([[*a, *b], [*c, *d]]);
+                let witness = classify_square_2cnf(&formula)?;
+                witness.complement()?;
+                let structural_check = match witness.form {
+                    Square2CnfForm::Empty => StructuralCheck::Square2CnfEmpty,
+                    Square2CnfForm::Complete => StructuralCheck::Square2CnfComplete,
+                    Square2CnfForm::FormI => StructuralCheck::Square2CnfFormI,
+                    Square2CnfForm::FormII => StructuralCheck::Square2CnfFormII,
+                    Square2CnfForm::FormIII => StructuralCheck::Square2CnfFormIII,
+                };
+                (
+                    TheoremSource::Theorem6,
+                    structural_check,
+                    ComplementCheck::Square2CnfDualForm,
+                    PathCheck::TwoCnfValidated,
+                )
+            }
+            Self::Affine { literals, rhs } => {
+                let equation = normalized_affine_equation(literals, *rhs);
+                if equation.variables.len() > 128 {
                     return None;
                 }
-                normalized.insert(literal.atom.feature, positive);
+                let complement = equation.complement();
+                if equation.variables != complement.variables || equation.rhs == complement.rhs {
+                    return None;
+                }
+                (
+                    TheoremSource::Theorem5,
+                    StructuralCheck::SingleGf2Equation,
+                    ComplementCheck::Gf2RhsFlip,
+                    PathCheck::Gf2SystemValidated,
+                )
+            }
+            Self::EmpiricalAffine { .. } => return None,
+        };
+        let certificate = TheoremCertificate {
+            domain_regime: DomainRegime::Boolean,
+            language_family: self.language(),
+            theorem_id,
+            structural_check,
+            complement_check,
+            backend: self.backend(),
+            assumptions_supported: true,
+            path_check,
+        };
+        certificate.is_valid().then_some(certificate)
+    }
+}
+
+fn boolean_formula_from_clauses<I, C>(clauses: I) -> BooleanFormula
+where
+    I: IntoIterator<Item = C>,
+    C: AsRef<[Literal]>,
+{
+    let mut normalized = Vec::new();
+    for clause in clauses {
+        let mut literals = Vec::new();
+        let mut tautology = false;
+        for literal in clause.as_ref() {
+            match (literal.eval_value(0.0), literal.eval_value(1.0)) {
+                (true, true) => {
+                    tautology = true;
+                    break;
+                }
+                (false, false) => {}
+                (false, true) => {
+                    literals.push(BooleanLiteral::new(literal.atom.feature, true));
+                }
+                (true, false) => {
+                    literals.push(BooleanLiteral::new(literal.atom.feature, false));
+                }
             }
         }
+        if !tautology {
+            normalized.push(literals);
+        }
     }
-    Some(normalized.into_values().collect())
+    BooleanFormula::new(normalized)
+}
+
+/// Canonicalizes an affine literal list over the Boolean domain.  Repeated
+/// variables cancel modulo two and negative/constant literals adjust the RHS.
+pub fn normalized_affine_equation(literals: &[Literal], mut rhs: bool) -> SingleGf2Equation {
+    let mut variables = BTreeSet::new();
+    for literal in literals {
+        let toggle_variable = match (literal.eval_value(0.0), literal.eval_value(1.0)) {
+            (false, false) => false,
+            (true, true) => {
+                rhs = !rhs;
+                false
+            }
+            (false, true) => true,
+            (true, false) => {
+                rhs = !rhs;
+                true
+            }
+        };
+        if toggle_variable && !variables.insert(literal.atom.feature) {
+            variables.remove(&literal.atom.feature);
+        }
+    }
+    SingleGf2Equation {
+        variables: variables.into_iter().collect(),
+        rhs,
+    }
 }
