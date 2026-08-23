@@ -33,6 +33,12 @@ are derived independently on each deterministic 70% training fold and then
 averaged; held-out labels are never used. Structural correlations are labeled
 exploratory. Raw fit times are local-machine measurements.
 
+The controlled compactness tables and the node, literal, and AXp heatmaps use
+the already-frozen 0%-noise controlled rows; they do not rerun training.
+Smaller values are better in these three figures. Their captions distinguish
+perfect predictive accuracy from direct, compact representation of a target's
+native logical structure.
+
 The frozen CSV records exact final-tree family counts but not root identity,
 per-node depth, per-node gain, or per-node arity. Accordingly,
 `cals_language_usage.csv` preserves exact all-node counts and explicitly marks

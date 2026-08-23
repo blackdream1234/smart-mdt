@@ -1,0 +1,6 @@
+analysis_label,family,signal,advantage_definition,n_datasets,spearman_rho,p_value_uncorrected,bootstrap_ci_lower,bootstrap_ci_upper,bootstrap_resamples,statistical_unit
+EXPLORATORY STRUCTURAL CHARACTERIZATION,unary,unary_signal,accuracy_unary - mean_accuracy_other_fixed,46,0.0010484442941862291,0.9944825164306201,-0.2699763790665266,0.28242532025805217,10000,dataset
+EXPLORATORY STRUCTURAL CHARACTERIZATION,horn,horn_signal,accuracy_horn - mean_accuracy_other_fixed,46,-0.0845513413506013,0.5763833410187083,-0.39203449768739096,0.21139611377184817,10000,dataset
+EXPLORATORY STRUCTURAL CHARACTERIZATION,antihorn,antihorn_signal,accuracy_antihorn - mean_accuracy_other_fixed,46,-0.13734620253839605,0.36270912457995796,-0.40829984583669193,0.1542791252120291,10000,dataset
+EXPLORATORY STRUCTURAL CHARACTERIZATION,square2cnf,square2cnf_signal,accuracy_square2cnf - mean_accuracy_other_fixed,46,0.13857966641390923,0.35837341299854275,-0.16880171795135673,0.4119775220652581,10000,dataset
+EXPLORATORY STRUCTURAL CHARACTERIZATION,affine,affine_signal,accuracy_affine - mean_accuracy_other_fixed,46,0.11292361780323444,0.4549413146447794,-0.14325672898642147,0.35112190780691904,10000,dataset

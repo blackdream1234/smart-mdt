@@ -1,0 +1,18 @@
+STATUS: PASS
+
+Exact theorem regression suites:
+- audit_affine: 8 passed
+- audit_certificate_boundaries: 6 passed
+- exact_theorem_classes: 5 passed
+- path_theory_state: 12 passed
+- total targeted theorem/path tests: 31 passed
+
+Independent frozen evidence:
+- exact theorem reaudit: 7,360 / 7,360 valid
+- theorem partition: 7,360 theorem rows, 0 empirical rows
+- held-out AXp validity/minimality: complete for every theorem row
+- empirical fallback/path/cache violations: 0
+- independent leakage audit: 46 datasets, 0 raw/bin/complement leaks
+
+The full all-target/all-feature Rust and Python suites are reported in
+docs/FINAL_PRE_THESIS_FREEZE_REPORT.md outside this bundle.

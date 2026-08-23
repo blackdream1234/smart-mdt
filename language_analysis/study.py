@@ -54,6 +54,26 @@ CONTROLLED_FAMILY = {
     "square_form_iii": "square2cnf",
     "affine_xor3": "affine",
 }
+CONTROLLED_TARGET_ORDER = [
+    "unary",
+    "horn_simple",
+    "horn_chain",
+    "antihorn_chain",
+    "square_form_i",
+    "square_form_ii",
+    "square_form_iii",
+    "affine_xor3",
+]
+CONTROLLED_TARGET_DISPLAY = {
+    "unary": "Unary target",
+    "horn_simple": "Simple star-nested Horn",
+    "horn_chain": "Chained star-nested Horn",
+    "antihorn_chain": "Chained star-nested Anti-Horn",
+    "square_form_i": "Square2CNF Form I",
+    "square_form_ii": "Square2CNF Form II",
+    "square_form_iii": "Square2CNF Form III",
+    "affine_xor3": "XOR3",
+}
 
 
 def configure_plots() -> None:
@@ -109,6 +129,46 @@ def heatmap(frame: pd.DataFrame, path: Path, title: str, fmt: str, cmap: str) ->
     save(fig, path)
 
 
+def controlled_heatmap(
+    frame: pd.DataFrame,
+    path: Path,
+    title: str,
+    fmt: str,
+    colorbar_label: str,
+) -> None:
+    ordered = frame.reindex(CONTROLLED_TARGET_ORDER)[FIXED]
+    fig, ax = plt.subplots(figsize=(8.6, 5.2))
+    image = ax.imshow(ordered.to_numpy(float), aspect="auto", cmap="YlGn_r")
+    ax.set_xticks(
+        range(len(ordered.columns)),
+        [DISPLAY[method] for method in ordered.columns],
+        rotation=28,
+        ha="right",
+    )
+    ax.set_yticks(
+        range(len(ordered.index)),
+        [CONTROLLED_TARGET_DISPLAY[target] for target in ordered.index],
+    )
+    ax.set_title(f"{title}\n↓ Smaller is better")
+    ax.set_xlabel(
+        "Accuracy alone can hide specialization; compactness shows when a "
+        "language represents native structure directly."
+    )
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02)
+    colorbar.set_label(colorbar_label)
+    for i in range(len(ordered)):
+        for j in range(len(ordered.columns)):
+            ax.text(
+                j,
+                i,
+                format(ordered.iloc[i, j], fmt),
+                ha="center",
+                va="center",
+                fontsize=7,
+            )
+    save(fig, path)
+
+
 def parse_controlled(raw_path: Path, output: Path) -> pd.DataFrame:
     raw = pd.read_csv(raw_path)
     split = raw["dataset"].str.extract(r"^(.*)__noise_(\d+)$")
@@ -140,6 +200,163 @@ def parse_controlled(raw_path: Path, output: Path) -> pd.DataFrame:
         "viridis",
     )
     return grouped
+
+
+def controlled_compactness(controlled: pd.DataFrame, output: Path) -> pd.DataFrame:
+    """Export clean-target compactness evidence without rerunning experiments."""
+    clean = controlled[controlled["noise_percent"] == 0].copy()
+    expected_keys = {
+        (target, method)
+        for target in CONTROLLED_TARGET_ORDER
+        for method in FIXED
+    }
+    actual_keys = set(zip(clean["target"], clean["method"]))
+    if len(clean) != len(expected_keys) or actual_keys != expected_keys:
+        raise SystemExit("refusing incomplete controlled 0%-noise family grid")
+
+    clean["native_family"] = clean["target"].map(CONTROLLED_FAMILY)
+    clean["accuracy_gap_from_best"] = clean.groupby("target")["accuracy"].transform("max") - clean["accuracy"]
+    native = clean[clean["method"] == clean["native_family"]].set_index("target")
+    clean["node_ratio_vs_native"] = clean.apply(
+        lambda row: row["nodes"] / native.loc[row["target"], "nodes"], axis=1
+    )
+    clean["literal_ratio_vs_native"] = clean.apply(
+        lambda row: row["predicate_literals"]
+        / native.loc[row["target"], "predicate_literals"],
+        axis=1,
+    )
+    summary = clean.rename(
+        columns={
+            "method": "family",
+            "predicate_literals": "literals",
+            "mean_axp_length": "mean_axp",
+            "training_time": "fit_time",
+        }
+    )[
+        [
+            "target",
+            "native_family",
+            "family",
+            "accuracy",
+            "nodes",
+            "literals",
+            "mean_axp",
+            "fit_time",
+            "accuracy_gap_from_best",
+            "node_ratio_vs_native",
+            "literal_ratio_vs_native",
+        ]
+    ]
+    target_rank = {target: index for index, target in enumerate(CONTROLLED_TARGET_ORDER)}
+    family_rank = {family: index for index, family in enumerate(FIXED)}
+    summary = summary.sort_values(
+        ["target", "family"],
+        key=lambda series: series.map(
+            target_rank if series.name == "target" else family_rank
+        ),
+    ).reset_index(drop=True)
+
+    xor_nodes = summary[summary["target"] == "affine_xor3"].set_index("family")["nodes"]
+    expected_xor_nodes = {"affine": 3.0, "square2cnf": 15.0, "unary": 23.0}
+    for family, expected in expected_xor_nodes.items():
+        if not np.isclose(xor_nodes[family], expected, atol=1e-12):
+            raise SystemExit(
+                f"controlled source mismatch: XOR3 {family} nodes="
+                f"{xor_nodes[family]} expected {expected}"
+            )
+
+    summary.to_csv(output / "controlled_compactness_summary.csv", index=False)
+    write_controlled_compactness_latex(
+        summary, output / "controlled_compactness_summary.tex"
+    )
+
+    clean_pivots = {
+        "nodes": clean.pivot(index="target", columns="method", values="nodes"),
+        "literals": clean.pivot(
+            index="target", columns="method", values="predicate_literals"
+        ),
+        "mean_axp": clean.pivot(
+            index="target", columns="method", values="mean_axp_length"
+        ),
+    }
+    controlled_heatmap(
+        clean_pivots["nodes"],
+        output / "controlled_nodes_heatmap.pdf",
+        "Mean final tree nodes at 0% label noise",
+        ".1f",
+        "Mean final tree nodes",
+    )
+    controlled_heatmap(
+        clean_pivots["literals"],
+        output / "controlled_literals_heatmap.pdf",
+        "Mean predicate-literal count at 0% label noise",
+        ".1f",
+        "Mean predicate literals",
+    )
+    controlled_heatmap(
+        clean_pivots["mean_axp"],
+        output / "controlled_axp_heatmap.pdf",
+        "Mean AXp length at 0% label noise",
+        ".2f",
+        "Mean AXp length",
+    )
+    return summary
+
+
+def latex_escape(value: object) -> str:
+    return str(value).replace("_", r"\_").replace("%", r"\%")
+
+
+def write_controlled_compactness_latex(frame: pd.DataFrame, path: Path) -> None:
+    columns = [
+        "Target",
+        "Native",
+        "Family",
+        "Acc.",
+        "Nodes",
+        "Literals",
+        "AXp",
+        "Fit time",
+        "Acc. gap",
+        "Node ratio",
+        "Literal ratio",
+    ]
+    lines = [
+        r"\begin{tabular}{lllrrrrrrrr}",
+        r"\toprule",
+        " & ".join(columns) + r" \\",
+        r"\midrule",
+    ]
+    for row in frame.itertuples(index=False):
+        values = [
+            CONTROLLED_TARGET_DISPLAY[row.target],
+            DISPLAY[row.native_family],
+            DISPLAY[row.family],
+            f"{row.accuracy:.3f}",
+            f"{row.nodes:.1f}",
+            f"{row.literals:.1f}",
+            f"{row.mean_axp:.2f}",
+            f"{row.fit_time:.6f}",
+            f"{row.accuracy_gap_from_best:.3f}",
+            f"{row.node_ratio_vs_native:.2f}",
+            f"{row.literal_ratio_vs_native:.2f}",
+        ]
+        important = row.family == row.native_family or (
+            row.target == "affine_xor3"
+            and row.family in {"unary", "square2cnf", "affine"}
+        )
+        escaped = [latex_escape(value) for value in values]
+        if important:
+            escaped = [rf"\textbf{{{value}}}" for value in escaped]
+        lines.append(" & ".join(escaped) + r" \\")
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
+            "% Native-family rows and the XOR3 Unary/Square2CNF/Affine comparison are bold.",
+        ]
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def fixed_results(full: pd.DataFrame, output: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -702,6 +919,12 @@ are derived independently on each deterministic 70% training fold and then
 averaged; held-out labels are never used. Structural correlations are labeled
 exploratory. Raw fit times are local-machine measurements.
 
+The controlled compactness tables and the node, literal, and AXp heatmaps use
+the already-frozen 0%-noise controlled rows; they do not rerun training.
+Smaller values are better in these three figures. Their captions distinguish
+perfect predictive accuracy from direct, compact representation of a target's
+native logical structure.
+
 The frozen CSV records exact final-tree family counts but not root identity,
 per-node depth, per-node gain, or per-node arity. Accordingly,
 `cals_language_usage.csv` preserves exact all-node counts and explicitly marks
@@ -734,10 +957,13 @@ def main() -> None:
     if not exact_bool(full["theorem_certified"], "theorem_certified").all():
         raise SystemExit("refusing benchmark with non-certified rows")
     metadata = pd.read_csv(args.benchmark / "dataset_metadata.csv")
-    if len(metadata) != 46 or not exact_bool(metadata["is_binary_features"], "is_binary_features").all():
+    if len(metadata) != 46 or not exact_bool(
+        metadata["is_binary_features"], "is_binary_features"
+    ).all():
         raise SystemExit("refusing non-Boolean or incomplete dataset metadata")
 
-    parse_controlled(args.controlled, args.output)
+    controlled = parse_controlled(args.controlled, args.output)
+    controlled_compactness(controlled, args.output)
     overall, _ranks = fixed_results(full, args.output)
     signatures = structural_signatures(args.data, args.output)
     specialization(signatures, overall, args.output)

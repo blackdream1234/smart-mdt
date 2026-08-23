@@ -114,7 +114,11 @@ language. Native-family accuracies at 10% deterministic noise were 0.888
 
 The complete table is
 `language_analysis/controlled_expressive_power.csv`; the expanded heatmap is
-`controlled_expressive_power_heatmap.pdf`.
+`controlled_expressive_power_heatmap.pdf`. Compactness evidence is exported in
+`controlled_compactness_summary.csv` and `.tex`, with separate 0%-noise node,
+predicate-literal, and AXp heatmaps. Each compactness figure marks smaller
+values as better and states why accuracy alone cannot identify direct native
+representation.
 
 ## 5. Fixed-family real-data results
 
