@@ -26,6 +26,7 @@ fn benchmark_rejects_an_unknown_method_instead_of_silently_skipping_rows() {
         depths: vec![1],
         runs: 1,
         methods: vec!["unray".into()],
+        datasets: Vec::new(),
         output,
         seed: 42,
         strict_data_checks: false,

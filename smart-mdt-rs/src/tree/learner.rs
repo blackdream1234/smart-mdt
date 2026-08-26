@@ -7,7 +7,7 @@ use super::{
 };
 use crate::{
     data::Dataset,
-    logic::{candidate_is_compatible, next_theory_state, PathTheoryState},
+    logic::{candidate_is_compatible, next_theory_state, AllowedLanguages, PathTheoryState},
     search::{
         exact_branch_and_bound_top_k, BranchAndBoundConfig, SplitCandidate, SplitScoreConfig,
     },
@@ -47,6 +47,7 @@ pub struct LearnerConfig {
     pub pruning: PruningConfig,
     pub adaptive_language: AdaptiveLanguageConfig,
     pub axp_rerank: AxpRerankConfig,
+    pub allowed_languages: AllowedLanguages,
     pub language_policy: LanguagePolicy,
     pub theorem_mode: bool,
     pub random_seed: u64,
@@ -68,6 +69,7 @@ impl Default for LearnerConfig {
             pruning: PruningConfig::default(),
             adaptive_language: AdaptiveLanguageConfig::default(),
             axp_rerank: AxpRerankConfig::default(),
+            allowed_languages: AllowedLanguages::all(),
             language_policy: LanguagePolicy::BestCertifiedPerNode,
             theorem_mode: true,
             random_seed: 42,
@@ -92,6 +94,11 @@ pub fn learn_with_diagnostics(
     {
         return Err(SmartMdtError::TheoremRejected(
             "empirical policy in theorem mode".into(),
+        ));
+    }
+    if cfg.allowed_languages.is_empty() {
+        return Err(SmartMdtError::InvalidInput(
+            "allowed predicate language set must not be empty".into(),
         ));
     }
     if cfg.tree_search.node_budget == 0 {
@@ -176,6 +183,7 @@ fn candidates(
         node,
         CandidateGenerationConfig {
             policy: cfg.language_policy,
+            allowed_languages: cfg.allowed_languages,
             min_leaf: cfg.min_samples_leaf,
             beam: candidate_generation_width(cfg),
             score: &cfg.split_score,
@@ -359,8 +367,9 @@ fn search_state_key(node: &NodeView, cfg: &LearnerConfig, node_budget: usize) ->
         node.theory_state,
         format!("{:?}", cfg.split_score),
         format!(
-            "policy={:?};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};conditional={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?};axp={:?}",
+            "policy={:?};allowed_languages={};min_split={};min_leaf={};candidate_cap={};candidate_beam={};branch={:?};conditional={:?};tree_search={:?};parallel={:?};pruning={:?};adaptive={:?};axp={:?}",
             cfg.language_policy,
+            cfg.allowed_languages,
             cfg.min_samples_split,
             cfg.min_samples_leaf,
             cfg.max_candidates_per_node,
@@ -923,4 +932,36 @@ pub fn tree_path_theory_metadata(tree: &TreeNode) -> (String, String, bool) {
 /// Returns true iff every root-to-leaf path stays within one tractable theory.
 pub fn tree_is_certified(tree: &TreeNode) -> bool {
     tree_path_theory_states(tree).is_ok()
+}
+
+#[cfg(test)]
+mod language_cache_tests {
+    use super::*;
+    use crate::{data::BitSet, logic::LanguageFamily, tree::CalsConfig};
+
+    #[test]
+    fn allowed_language_mask_is_part_of_every_search_state_cache_key() {
+        let node = NodeView {
+            rows: BitSet::ones(8),
+            depth: 0,
+            theory_state: PathTheoryState::Uncommitted,
+        };
+        let base = CalsConfig::thesis();
+        let horn = base
+            .clone()
+            .with_allowed_languages(AllowedLanguages::only(LanguageFamily::Horn))
+            .learner_config(3, 42);
+        let affine = base
+            .with_allowed_languages(AllowedLanguages::only(LanguageFamily::Affine))
+            .learner_config(3, 42);
+        let horn_key = search_state_key(&node, &horn, 15);
+        let affine_key = search_state_key(&node, &affine, 15);
+        assert_ne!(horn_key, affine_key);
+        assert!(horn_key
+            .candidate_config_key
+            .contains("allowed_languages=Horn"));
+        assert!(affine_key
+            .candidate_config_key
+            .contains("allowed_languages=Affine"));
+    }
 }

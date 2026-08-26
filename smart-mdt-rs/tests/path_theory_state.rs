@@ -271,6 +271,7 @@ fn smart_certified_benchmark_emits_path_metadata_and_enters_theorem_table() {
         depths: vec![3],
         runs: 1,
         methods: vec!["smart_certified".into()],
+        datasets: Vec::new(),
         output: output.clone(),
         seed: 42,
         strict_data_checks: false,

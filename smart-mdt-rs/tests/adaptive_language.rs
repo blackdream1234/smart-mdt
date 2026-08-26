@@ -1,6 +1,6 @@
 use smart_mdt_rs::{
     data::{ColumnMajorMatrix, Dataset},
-    logic::{LanguageFamily, PathTheoryState},
+    logic::{AllowedLanguages, LanguageFamily, PathTheoryState},
     tree::{
         allocate_family_budgets, learn, tree_is_certified, AdaptiveLanguageConfig,
         CandidateGenerationConfig, FamilyPilotMetrics, LanguagePolicy, LearnerConfig, NodeView,
@@ -87,6 +87,7 @@ fn incompatible_families_receive_no_pilot_or_budget() {
             &node,
             CandidateGenerationConfig {
                 policy: LanguagePolicy::SmartCertified,
+                allowed_languages: AllowedLanguages::all(),
                 min_leaf: 1,
                 beam: 8,
                 score: &Default::default(),
@@ -168,6 +169,7 @@ fn retained_budget_never_expands_the_literal_construction_beam() {
             &context.root_view(),
             CandidateGenerationConfig {
                 policy: LanguagePolicy::SmartCertified,
+                allowed_languages: AllowedLanguages::all(),
                 min_leaf: 1,
                 beam: 4,
                 score: &Default::default(),
@@ -197,6 +199,7 @@ fn adaptive_parallel_pilots_match_serial_and_record_threads() {
                 &context.root_view(),
                 CandidateGenerationConfig {
                     policy: LanguagePolicy::SmartCertified,
+                    allowed_languages: AllowedLanguages::all(),
                     min_leaf: 1,
                     beam: 8,
                     score: &Default::default(),

@@ -52,6 +52,7 @@ fn compact_benchmark_row_is_theorem_admissible_and_reports_class_metrics() {
         depths: vec![2],
         runs: 1,
         methods: vec!["cals_compact_explain".into()],
+        datasets: Vec::new(),
         output: output.clone(),
         seed: 42,
         strict_data_checks: false,

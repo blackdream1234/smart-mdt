@@ -7,6 +7,9 @@ pub struct ResultRow {
     pub run: usize,
     pub depth: usize,
     pub method: String,
+    pub optimizer_profile: String,
+    pub allowed_language_set: String,
+    pub ablation_variant: String,
     pub accuracy: f64,
     pub train_time: f64,
     pub predict_time: f64,
@@ -81,6 +84,7 @@ pub struct ResultRow {
     pub parallel_threads: usize,
     pub compatible_family_count: usize,
     pub selected_family_counts: String,
+    pub root_language: String,
     pub path_violation_count: usize,
     pub max_axp_length: usize,
     pub total_fit_time: f64,
@@ -100,6 +104,9 @@ impl Default for ResultRow {
             run: 0,
             depth: 0,
             method: String::new(),
+            optimizer_profile: String::new(),
+            allowed_language_set: String::new(),
+            ablation_variant: String::new(),
             accuracy: 0.0,
             train_time: 0.0,
             predict_time: 0.0,
@@ -171,6 +178,7 @@ impl Default for ResultRow {
             parallel_threads: 0,
             compatible_family_count: 0,
             selected_family_counts: String::new(),
+            root_language: String::new(),
             path_violation_count: 0,
             max_axp_length: 0,
             total_fit_time: 0.0,
@@ -241,6 +249,31 @@ pub fn theorem_table_filter(r: &ResultRow) -> bool {
         "cals" | "cals_compact_explain" => {
             matches!(r.language_family, LanguageFamily::SmartCertified)
                 && matches!(r.backend, Backend::PathCertified)
+        }
+        "cals_unary" | "cals_compact_explain_unary" => {
+            matches!(r.language_family, LanguageFamily::Unary)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted"])
+        }
+        "cals_horn" | "cals_compact_explain_horn" => {
+            matches!(r.language_family, LanguageFamily::Horn)
+                && matches!(r.backend, Backend::StructuralHorn)
+                && path_states_are_within(r, &["uncommitted", "horn"])
+        }
+        "cals_antihorn" | "cals_compact_explain_antihorn" => {
+            matches!(r.language_family, LanguageFamily::AntiHorn)
+                && matches!(r.backend, Backend::StructuralAntiHorn)
+                && path_states_are_within(r, &["uncommitted", "antihorn"])
+        }
+        "cals_square2cnf" | "cals_compact_explain_square2cnf" => {
+            matches!(r.language_family, LanguageFamily::Square2Cnf)
+                && matches!(r.backend, Backend::TwoSat)
+                && path_states_are_within(r, &["uncommitted", "two_sat"])
+        }
+        "cals_affine" | "cals_compact_explain_affine" => {
+            matches!(r.language_family, LanguageFamily::Affine)
+                && matches!(r.backend, Backend::Gf2Gaussian)
+                && path_states_are_within(r, &["uncommitted", "affine_gf2"])
         }
         _ => false,
     }

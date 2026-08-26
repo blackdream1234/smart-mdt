@@ -66,6 +66,7 @@ fn cals_benchmark_method_is_theorem_admissible() {
         depths: vec![2],
         runs: 1,
         methods: vec!["cals".into()],
+        datasets: Vec::new(),
         output: output.clone(),
         seed: 42,
         strict_data_checks: false,

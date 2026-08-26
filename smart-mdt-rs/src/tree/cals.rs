@@ -5,10 +5,12 @@ use super::{
     ConditionalCandidateSearchConfig, LearnerConfig, ParallelConfig, PruningConfig,
     SelectiveLookaheadConfig, TreeSearchConfig, TreeSearchStrategy,
 };
+use crate::logic::AllowedLanguages;
 use crate::search::{BranchAndBoundConfig, SplitScoreConfig};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CalsConfig {
+    pub allowed_languages: AllowedLanguages,
     pub scoring: SplitScoreConfig,
     pub branch_and_bound: BranchAndBoundConfig,
     pub cache: CacheConfig,
@@ -52,6 +54,7 @@ impl CalsConfig {
             ..ParallelConfig::default()
         };
         Self {
+            allowed_languages: AllowedLanguages::all(),
             scoring: SplitScoreConfig::sparse_certified(),
             branch_and_bound,
             cache: CacheConfig::all_enabled(),
@@ -95,6 +98,7 @@ impl CalsConfig {
             ..PruningConfig::default()
         };
         Self {
+            allowed_languages: AllowedLanguages::all(),
             scoring: SplitScoreConfig::sparse_certified(),
             branch_and_bound: BranchAndBoundConfig {
                 enabled: true,
@@ -143,11 +147,19 @@ impl CalsConfig {
             pruning: self.pruning.clone(),
             adaptive_language: self.adaptive_language.clone(),
             axp_rerank: self.axp_rerank.clone(),
+            allowed_languages: self.allowed_languages,
             language_policy: super::LanguagePolicy::SmartCertified,
             theorem_mode: true,
             random_seed,
             ..LearnerConfig::default()
         }
+    }
+
+    /// Returns the same optimizer profile with only the admissible predicate
+    /// language set changed.
+    pub fn with_allowed_languages(mut self, allowed_languages: AllowedLanguages) -> Self {
+        self.allowed_languages = allowed_languages;
+        self
     }
 }
 

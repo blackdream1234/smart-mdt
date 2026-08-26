@@ -12,8 +12,8 @@ use crate::{
     data::{is_boolean_column, predicate_mask, BitSet, Dataset},
     explain::extract_axp_deletion,
     logic::{
-        candidate_is_compatible, next_theory_state, Literal, PathTheoryState, Predicate,
-        ThresholdAtom, ThresholdOp,
+        candidate_is_compatible, next_theory_state, AllowedLanguages, Literal, PathTheoryState,
+        Predicate, ThresholdAtom, ThresholdOp,
     },
     search::{
         gini, information_gain, score_split, BranchAndBoundDiagnostics, SplitCandidate,
@@ -42,11 +42,21 @@ pub struct NodeView {
 /// Borrowed controls for one adaptive candidate-generation request.
 pub struct CandidateGenerationConfig<'a> {
     pub policy: LanguagePolicy,
+    pub allowed_languages: AllowedLanguages,
     pub min_leaf: usize,
     pub beam: usize,
     pub score: &'a SplitScoreConfig,
     pub parallel: &'a ParallelConfig,
     pub adaptive: &'a AdaptiveLanguageConfig,
+}
+
+struct ParallelCandidateGenerationConfig<'a> {
+    policy: LanguagePolicy,
+    allowed_languages: AllowedLanguages,
+    min_leaf: usize,
+    beam: usize,
+    score: &'a SplitScoreConfig,
+    parallel: &'a ParallelConfig,
 }
 
 impl NodeView {
@@ -991,81 +1001,104 @@ impl TrainingContext {
         beam: usize,
         score_config: &SplitScoreConfig,
     ) -> Result<Vec<SplitCandidate>> {
+        self.generate_candidates_with_allowed(
+            node,
+            policy,
+            AllowedLanguages::all(),
+            min_leaf,
+            beam,
+            score_config,
+        )
+    }
+
+    /// Generates candidates after applying the admissible-family mask and
+    /// before any candidate ranking or branch-and-bound scoring.
+    pub fn generate_candidates_with_allowed(
+        &self,
+        node: &NodeView,
+        policy: LanguagePolicy,
+        allowed_languages: AllowedLanguages,
+        min_leaf: usize,
+        beam: usize,
+        score_config: &SplitScoreConfig,
+    ) -> Result<Vec<SplitCandidate>> {
         let mut output = Vec::new();
         match policy {
             LanguagePolicy::UnaryOnly => {
-                output.extend(self.generate_unary(node, min_leaf, score_config)?)
+                if allowed_languages.contains(crate::logic::LanguageFamily::Unary) {
+                    output.extend(self.generate_unary(node, min_leaf, score_config)?)
+                }
             }
-            LanguagePolicy::HornOnly => output.extend(self.generate_clause_family(
-                node,
-                min_leaf,
-                beam,
-                true,
-                score_config,
-            )?),
-            LanguagePolicy::AntiHornOnly => output.extend(self.generate_clause_family(
-                node,
-                min_leaf,
-                beam,
-                false,
-                score_config,
-            )?),
-            LanguagePolicy::Square2CnfOnly => {
-                output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?)
-            }
-            LanguagePolicy::AffineOnly => {
-                output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
-            }
-            LanguagePolicy::SmartCertified => {
-                // Compatibility is enforced before family generation and therefore
-                // before any candidate receives a numerical score.
-                output.extend(self.generate_unary(node, min_leaf, score_config)?);
-                match node.theory_state {
-                    PathTheoryState::Uncommitted => {
-                        output.extend(self.generate_clause_family(
-                            node,
-                            min_leaf,
-                            beam,
-                            true,
-                            score_config,
-                        )?);
-                        output.extend(self.generate_clause_family(
-                            node,
-                            min_leaf,
-                            beam,
-                            false,
-                            score_config,
-                        )?);
-                        output.extend(self.generate_square2cnf(
-                            node,
-                            min_leaf,
-                            beam,
-                            score_config,
-                        )?);
-                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?);
-                    }
-                    PathTheoryState::Horn => output.extend(self.generate_clause_family(
+            LanguagePolicy::HornOnly => {
+                if allowed_languages.contains(crate::logic::LanguageFamily::Horn) {
+                    output.extend(self.generate_clause_family(
                         node,
                         min_leaf,
                         beam,
                         true,
                         score_config,
-                    )?),
-                    PathTheoryState::AntiHorn => output.extend(self.generate_clause_family(
+                    )?)
+                }
+            }
+            LanguagePolicy::AntiHornOnly => {
+                if allowed_languages.contains(crate::logic::LanguageFamily::AntiHorn) {
+                    output.extend(self.generate_clause_family(
                         node,
                         min_leaf,
                         beam,
                         false,
                         score_config,
-                    )?),
-                    PathTheoryState::TwoSat => output.extend(self.generate_square2cnf(
-                        node,
-                        min_leaf,
-                        beam,
-                        score_config,
-                    )?),
-                    PathTheoryState::AffineGf2 => {
-                        output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
+                    )?)
+                }
+            }
+            LanguagePolicy::Square2CnfOnly => {
+                if allowed_languages.contains(crate::logic::LanguageFamily::Square2Cnf) {
+                    output.extend(self.generate_square2cnf(node, min_leaf, beam, score_config)?)
+                }
+            }
+            LanguagePolicy::AffineOnly => {
+                if allowed_languages.contains(crate::logic::LanguageFamily::Affine) {
+                    output.extend(self.generate_affine(node, min_leaf, beam, score_config)?)
+                }
+            }
+            LanguagePolicy::SmartCertified => {
+                // Compatibility is enforced before family generation and therefore
+                // before any candidate receives a numerical score.
+                if allowed_languages.contains(crate::logic::LanguageFamily::Unary) {
+                    output.extend(self.generate_unary(node, min_leaf, score_config)?);
+                }
+                match node.theory_state {
+                    PathTheoryState::Uncommitted => {
+                        for family_policy in
+                            generation_policies(policy, node.theory_state, allowed_languages)
+                        {
+                            if family_policy != LanguagePolicy::UnaryOnly {
+                                output.extend(self.generate_candidates_with_allowed(
+                                    node,
+                                    family_policy,
+                                    allowed_languages,
+                                    min_leaf,
+                                    beam,
+                                    score_config,
+                                )?);
+                            }
+                        }
+                    }
+                    _ => {
+                        for family_policy in
+                            generation_policies(policy, node.theory_state, allowed_languages)
+                        {
+                            if family_policy != LanguagePolicy::UnaryOnly {
+                                output.extend(self.generate_candidates_with_allowed(
+                                    node,
+                                    family_policy,
+                                    allowed_languages,
+                                    min_leaf,
+                                    beam,
+                                    score_config,
+                                )?);
+                            }
+                        }
                     }
                 }
             }
@@ -1105,19 +1138,61 @@ impl TrainingContext {
         score_config: &SplitScoreConfig,
         parallel: &ParallelConfig,
     ) -> Result<Vec<SplitCandidate>> {
-        let families = generation_policies(policy, node.theory_state);
+        self.generate_candidates_parallel_with_allowed(
+            node,
+            ParallelCandidateGenerationConfig {
+                policy,
+                allowed_languages: AllowedLanguages::all(),
+                min_leaf,
+                beam,
+                score: score_config,
+                parallel,
+            },
+        )
+    }
+
+    fn generate_candidates_parallel_with_allowed(
+        &self,
+        node: &NodeView,
+        request: ParallelCandidateGenerationConfig<'_>,
+    ) -> Result<Vec<SplitCandidate>> {
+        let ParallelCandidateGenerationConfig {
+            policy,
+            allowed_languages,
+            min_leaf,
+            beam,
+            score: score_config,
+            parallel,
+        } = request;
+        let families = generation_policies(policy, node.theory_state, allowed_languages);
         let should_parallel = parallel.enabled
             && parallel.parallel_candidates
             && families.len() >= parallel.minimum_parallel_work.max(1);
         if !should_parallel {
             self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
-            return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+            return self.generate_candidates_with_allowed(
+                node,
+                policy,
+                allowed_languages,
+                min_leaf,
+                beam,
+                score_config,
+            );
         }
 
         let evaluate = || {
             families
                 .par_iter()
-                .map(|&family| self.generate_candidates(node, family, min_leaf, beam, score_config))
+                .map(|&family| {
+                    self.generate_candidates_with_allowed(
+                        node,
+                        family,
+                        allowed_languages,
+                        min_leaf,
+                        beam,
+                        score_config,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let (batches, threads) = if let Some(threads) = parallel.threads {
@@ -1128,7 +1203,14 @@ impl TrainingContext {
                 Ok(pool) => (pool.install(evaluate), threads.max(1)),
                 Err(_) => {
                     self.record_parallel(|diagnostics| diagnostics.serial_fallbacks += 1);
-                    return self.generate_candidates(node, policy, min_leaf, beam, score_config);
+                    return self.generate_candidates_with_allowed(
+                        node,
+                        policy,
+                        allowed_languages,
+                        min_leaf,
+                        beam,
+                        score_config,
+                    );
                 }
             }
         } else {
@@ -1157,6 +1239,7 @@ impl TrainingContext {
     ) -> Result<Vec<SplitCandidate>> {
         let CandidateGenerationConfig {
             policy,
+            allowed_languages,
             min_leaf,
             beam,
             score: score_config,
@@ -1164,27 +1247,33 @@ impl TrainingContext {
             adaptive,
         } = request;
         if !adaptive.enabled || policy != LanguagePolicy::SmartCertified {
-            return self.generate_candidates_parallel(
+            return self.generate_candidates_parallel_with_allowed(
                 node,
-                policy,
-                min_leaf,
-                beam,
-                score_config,
-                parallel,
+                ParallelCandidateGenerationConfig {
+                    policy,
+                    allowed_languages,
+                    min_leaf,
+                    beam,
+                    score: score_config,
+                    parallel,
+                },
             );
         }
-        let policies = generation_policies(policy, node.theory_state);
+        let policies = generation_policies(policy, node.theory_state, allowed_languages);
         // Reuse the deterministic parallel family evaluator for the pilot.
         // Results are regrouped by family below, so completion order cannot
         // influence utilities or budget allocation.
         let parallel_pilot = if parallel.enabled && parallel.parallel_candidates {
-            Some(self.generate_candidates_parallel(
+            Some(self.generate_candidates_parallel_with_allowed(
                 node,
-                policy,
-                min_leaf,
-                adaptive.pilot_candidates_per_family.max(1),
-                score_config,
-                parallel,
+                ParallelCandidateGenerationConfig {
+                    policy,
+                    allowed_languages,
+                    min_leaf,
+                    beam: adaptive.pilot_candidates_per_family.max(1),
+                    score: score_config,
+                    parallel,
+                },
             )?)
         } else {
             None
@@ -1425,8 +1514,12 @@ impl TrainingContext {
     }
 }
 
-fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<LanguagePolicy> {
-    match policy {
+fn generation_policies(
+    policy: LanguagePolicy,
+    state: PathTheoryState,
+    allowed_languages: AllowedLanguages,
+) -> Vec<LanguagePolicy> {
+    let policies = match policy {
         LanguagePolicy::SmartCertified => {
             let mut policies = vec![LanguagePolicy::UnaryOnly];
             match state {
@@ -1453,7 +1546,11 @@ fn generation_policies(policy: LanguagePolicy, state: PathTheoryState) -> Vec<La
             vec![LanguagePolicy::UnaryOnly]
         }
         family => vec![family],
-    }
+    };
+    policies
+        .into_iter()
+        .filter(|policy| allowed_languages.contains(family_for_policy(*policy)))
+        .collect()
 }
 
 fn family_for_policy(policy: LanguagePolicy) -> crate::logic::LanguageFamily {

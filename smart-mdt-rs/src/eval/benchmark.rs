@@ -2,7 +2,7 @@ use super::{accuracy, theorem_table_filter, BenchmarkWarning, ResultRow};
 use crate::{
     data::{load_dl8_with_metadata, ColumnMajorMatrix, Dataset, DatasetMetadata},
     explain::extract_final_tree_axps,
-    logic::{Backend, LanguageFamily},
+    logic::{AllowedLanguages, Backend, LanguageFamily},
     tree::{
         learn_with_diagnostics, predict_all, tree_path_theory_metadata, CalsConfig, LanguagePolicy,
         LearnerConfig, TreeNode,
@@ -27,6 +27,8 @@ pub struct BenchmarkConfig {
     pub runs: usize,
     /// Method names to evaluate.
     pub methods: Vec<String>,
+    /// Optional dataset stems to evaluate. Empty means every discovered dataset.
+    pub datasets: Vec<String>,
     /// Output directory.
     pub output: PathBuf,
     /// Base random seed.
@@ -74,9 +76,9 @@ pub fn run_full_benchmark(cfg: &BenchmarkConfig) -> Result<Vec<ResultRow>> {
         ));
     }
     for method in &cfg.methods {
-        method_policy(method)?;
+        method_spec(method)?;
     }
-    let files = discover_dl8_files(&cfg.data_dir)?;
+    let files = select_dataset_files(discover_dl8_files(&cfg.data_dir)?, &cfg.datasets)?;
     if files.is_empty() {
         return Err(SmartMdtError::InvalidInput(format!(
             "no .dl8 files found under {}",
@@ -144,68 +146,215 @@ fn discover_dl8_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn method_policy(method: &str) -> Result<(LanguagePolicy, LanguageFamily, Backend)> {
-    let policy = match method {
-        "unary" => (
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptimizerProfile {
+    LanguageSpecific,
+    Cals,
+    CompactExplain,
+    Other,
+}
+
+impl OptimizerProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LanguageSpecific => "language_specific",
+            Self::Cals => "cals",
+            Self::CompactExplain => "compact_explain",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MethodSpec {
+    policy: LanguagePolicy,
+    declared_family: LanguageFamily,
+    declared_backend: Backend,
+    optimizer_profile: OptimizerProfile,
+    allowed_languages: AllowedLanguages,
+    ablation_variant: &'static str,
+}
+
+fn single_language_spec(
+    policy: LanguagePolicy,
+    family: LanguageFamily,
+    backend: Backend,
+) -> MethodSpec {
+    MethodSpec {
+        policy,
+        declared_family: family,
+        declared_backend: backend,
+        optimizer_profile: OptimizerProfile::LanguageSpecific,
+        allowed_languages: AllowedLanguages::only(family),
+        ablation_variant: "language_specific_reference",
+    }
+}
+
+fn optimized_spec(
+    optimizer_profile: OptimizerProfile,
+    family: LanguageFamily,
+    backend: Backend,
+) -> MethodSpec {
+    MethodSpec {
+        policy: LanguagePolicy::SmartCertified,
+        declared_family: family,
+        declared_backend: backend,
+        optimizer_profile,
+        allowed_languages: AllowedLanguages::only(family),
+        ablation_variant: "single_language",
+    }
+}
+
+fn mixed_spec(optimizer_profile: OptimizerProfile) -> MethodSpec {
+    MethodSpec {
+        policy: LanguagePolicy::SmartCertified,
+        declared_family: LanguageFamily::SmartCertified,
+        declared_backend: Backend::PathCertified,
+        optimizer_profile,
+        allowed_languages: AllowedLanguages::all(),
+        ablation_variant: "mixed_language",
+    }
+}
+
+fn method_spec(method: &str) -> Result<MethodSpec> {
+    let spec = match method {
+        "unary" => single_language_spec(
             LanguagePolicy::UnaryOnly,
             LanguageFamily::Unary,
             Backend::StructuralHorn,
         ),
-        "horn" => (
+        "horn" => single_language_spec(
             LanguagePolicy::HornOnly,
             LanguageFamily::Horn,
             Backend::StructuralHorn,
         ),
-        "antihorn" => (
+        "antihorn" => single_language_spec(
             LanguagePolicy::AntiHornOnly,
             LanguageFamily::AntiHorn,
             Backend::StructuralAntiHorn,
         ),
-        "square2cnf" => (
+        "square2cnf" => single_language_spec(
             LanguagePolicy::Square2CnfOnly,
             LanguageFamily::Square2Cnf,
             Backend::TwoSat,
         ),
-        "affine" => (
+        "affine" => single_language_spec(
             LanguagePolicy::AffineOnly,
             LanguageFamily::Affine,
             Backend::Gf2Gaussian,
         ),
-        "smart_certified" => (
-            LanguagePolicy::SmartCertified,
-            LanguageFamily::SmartCertified,
-            Backend::PathCertified,
+        "smart_certified" => mixed_spec(OptimizerProfile::Other),
+        "cals" => mixed_spec(OptimizerProfile::Cals),
+        "cals_unary" => optimized_spec(
+            OptimizerProfile::Cals,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
         ),
-        "cals" => (
-            LanguagePolicy::SmartCertified,
-            LanguageFamily::SmartCertified,
-            Backend::PathCertified,
+        "cals_horn" => optimized_spec(
+            OptimizerProfile::Cals,
+            LanguageFamily::Horn,
+            Backend::StructuralHorn,
         ),
-        "cals_compact_explain" => (
-            LanguagePolicy::SmartCertified,
-            LanguageFamily::SmartCertified,
-            Backend::PathCertified,
+        "cals_antihorn" => optimized_spec(
+            OptimizerProfile::Cals,
+            LanguageFamily::AntiHorn,
+            Backend::StructuralAntiHorn,
         ),
-        "best-certified" => (
-            LanguagePolicy::BestCertifiedPerNode,
-            LanguageFamily::EmpiricalMixed,
-            Backend::EmpiricalMixed,
+        "cals_square2cnf" => optimized_spec(
+            OptimizerProfile::Cals,
+            LanguageFamily::Square2Cnf,
+            Backend::TwoSat,
         ),
+        "cals_affine" => optimized_spec(
+            OptimizerProfile::Cals,
+            LanguageFamily::Affine,
+            Backend::Gf2Gaussian,
+        ),
+        "cals_compact_explain" => mixed_spec(OptimizerProfile::CompactExplain),
+        "cals_compact_explain_unary" => optimized_spec(
+            OptimizerProfile::CompactExplain,
+            LanguageFamily::Unary,
+            Backend::StructuralHorn,
+        ),
+        "cals_compact_explain_horn" => optimized_spec(
+            OptimizerProfile::CompactExplain,
+            LanguageFamily::Horn,
+            Backend::StructuralHorn,
+        ),
+        "cals_compact_explain_antihorn" => optimized_spec(
+            OptimizerProfile::CompactExplain,
+            LanguageFamily::AntiHorn,
+            Backend::StructuralAntiHorn,
+        ),
+        "cals_compact_explain_square2cnf" => optimized_spec(
+            OptimizerProfile::CompactExplain,
+            LanguageFamily::Square2Cnf,
+            Backend::TwoSat,
+        ),
+        "cals_compact_explain_affine" => optimized_spec(
+            OptimizerProfile::CompactExplain,
+            LanguageFamily::Affine,
+            Backend::Gf2Gaussian,
+        ),
+        "best-certified" => MethodSpec {
+            policy: LanguagePolicy::BestCertifiedPerNode,
+            declared_family: LanguageFamily::EmpiricalMixed,
+            declared_backend: Backend::EmpiricalMixed,
+            optimizer_profile: OptimizerProfile::Other,
+            allowed_languages: AllowedLanguages::all(),
+            ablation_variant: "historical_baseline",
+        },
         _ => {
             return Err(SmartMdtError::InvalidInput(format!(
                 "unknown benchmark method {method}"
             )))
         }
     };
-    Ok(policy)
+    Ok(spec)
 }
 
-fn compatible_family_count_for_policy(policy: LanguagePolicy) -> usize {
+fn compatible_family_count_for_policy(
+    policy: LanguagePolicy,
+    allowed_languages: AllowedLanguages,
+) -> usize {
     match policy {
-        LanguagePolicy::SmartCertified => 5,
+        LanguagePolicy::SmartCertified => allowed_languages.len(),
         LanguagePolicy::CertifiedOnly | LanguagePolicy::BestCertifiedPerNode => 4,
         _ => 1,
     }
+}
+
+fn select_dataset_files(files: Vec<PathBuf>, requested: &[String]) -> Result<Vec<PathBuf>> {
+    if requested.is_empty() {
+        return Ok(files);
+    }
+    let requested = requested
+        .iter()
+        .map(|name| name.strip_suffix(".dl8").unwrap_or(name).to_string())
+        .collect::<BTreeSet<_>>();
+    let available = files
+        .iter()
+        .filter_map(|path| path.file_stem().and_then(|value| value.to_str()))
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let missing = requested
+        .difference(&available)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(SmartMdtError::InvalidInput(format!(
+            "requested datasets not found: {}",
+            missing.join(",")
+        )));
+    }
+    Ok(files
+        .into_iter()
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| requested.contains(name))
+        })
+        .collect())
 }
 
 fn predicates_backend_allowed(tree: &TreeNode, training: &Dataset) -> bool {
@@ -294,20 +443,26 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
         let (train, test) = split_train_test(ds, seed.wrapping_add(run as u64))?;
         for &depth in depths {
             for method in methods {
-                let (policy, declared_family, declared_backend) = method_policy(method)?;
+                let method_spec = method_spec(method)?;
+                let policy = method_spec.policy;
                 let random_seed = seed.wrapping_add(run as u64);
-                let cfg = if method == "cals" {
-                    cals.learner_config(depth, random_seed)
-                } else if method == "cals_compact_explain" {
-                    compact_explain.learner_config(depth, random_seed)
-                } else {
-                    LearnerConfig {
+                let cfg = match method_spec.optimizer_profile {
+                    OptimizerProfile::Cals => cals
+                        .clone()
+                        .with_allowed_languages(method_spec.allowed_languages)
+                        .learner_config(depth, random_seed),
+                    OptimizerProfile::CompactExplain => compact_explain
+                        .clone()
+                        .with_allowed_languages(method_spec.allowed_languages)
+                        .learner_config(depth, random_seed),
+                    _ => LearnerConfig {
                         max_depth: depth,
+                        allowed_languages: method_spec.allowed_languages,
                         language_policy: policy,
                         theorem_mode: policy != LanguagePolicy::BestCertifiedPerNode,
                         random_seed,
                         ..LearnerConfig::default()
-                    }
+                    },
                 };
                 let train_start = Instant::now();
                 let (tree, diagnostics) = learn_with_diagnostics(&train, &cfg)?;
@@ -377,7 +532,9 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     .iter()
                     .map(|node| node.compatible_families.len())
                     .max()
-                    .unwrap_or_else(|| compatible_family_count_for_policy(policy));
+                    .unwrap_or_else(|| {
+                        compatible_family_count_for_policy(policy, cfg.allowed_languages)
+                    });
                 let selected_family_counts =
                     format!("{:?}", diagnostics.adaptive_language.selected_family_counts);
                 let validation_class_support = pruning
@@ -414,6 +571,9 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     run,
                     depth,
                     method: method.clone(),
+                    optimizer_profile: method_spec.optimizer_profile.as_str().into(),
+                    allowed_language_set: method_spec.allowed_languages.to_string(),
+                    ablation_variant: method_spec.ablation_variant.into(),
                     accuracy: accuracy(&test.labels, &pred),
                     train_time,
                     predict_time,
@@ -429,8 +589,8 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     axp_valid_count: final_axps.valid_count,
                     axp_minimal_count: final_axps.minimal_count,
                     theorem_certified,
-                    language_family: declared_family,
-                    backend: declared_backend,
+                    language_family: method_spec.declared_family,
+                    backend: method_spec.declared_backend,
                     path_theory_state,
                     path_backend,
                     path_certified,
@@ -442,8 +602,8 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     search_strategy: format!("{:?}", cfg.tree_search.strategy),
                     score_profile: format!("{:?}", cfg.split_score.profile),
                     candidate_beam_width: if matches!(
-                        method.as_str(),
-                        "cals" | "cals_compact_explain"
+                        method_spec.optimizer_profile,
+                        OptimizerProfile::Cals | OptimizerProfile::CompactExplain
                     ) {
                         cfg.tree_search.candidate_beam_width
                     } else {
@@ -518,6 +678,12 @@ fn run_dataset_methods<P: AsRef<Path>>(spec: DatasetRunSpec<'_, P>) -> Result<Ve
                     parallel_threads: diagnostics.parallel.configured_threads,
                     compatible_family_count,
                     selected_family_counts,
+                    root_language: match &tree {
+                        TreeNode::Internal { predicate, .. } => {
+                            format!("{:?}", predicate.language())
+                        }
+                        TreeNode::Leaf { .. } => "Leaf".into(),
+                    },
                     path_violation_count,
                     max_axp_length,
                     total_fit_time: train_time,
@@ -994,7 +1160,17 @@ fn method_label(method: &str) -> &str {
         "affine" => "Affine",
         "smart_certified" => "Smart certified",
         "cals" => "CALS-MDT",
+        "cals_unary" => "Single-language CALS (Unary)",
+        "cals_horn" => "Single-language CALS (Horn)",
+        "cals_antihorn" => "Single-language CALS (AntiHorn)",
+        "cals_square2cnf" => "Single-language CALS (Square2CNF)",
+        "cals_affine" => "Single-language CALS (Affine)",
         "cals_compact_explain" => "CALS-MDT CompactExplain v2",
+        "cals_compact_explain_unary" => "Single-language CompactExplain (Unary)",
+        "cals_compact_explain_horn" => "Single-language CompactExplain (Horn)",
+        "cals_compact_explain_antihorn" => "Single-language CompactExplain (AntiHorn)",
+        "cals_compact_explain_square2cnf" => "Single-language CompactExplain (Square2CNF)",
+        "cals_compact_explain_affine" => "Single-language CompactExplain (Affine)",
         "best-certified" => "Best certified per node",
         other => other,
     }
@@ -1029,7 +1205,7 @@ fn axp_reporting_values(r: &ResultRow) -> (String, String, usize, usize) {
 }
 
 fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
-    let mut out = String::from("dataset,run,depth,method,accuracy,train_time,predict_time,tree_nodes,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,test_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
+    let mut out = String::from("dataset,run,depth,method,optimizer_profile,allowed_language_set,ablation_variant,accuracy,train_time,predict_time,tree_nodes,predicate_literals,leaves,max_depth_reached,mean_axp_length,axp_time,axp_extraction_stage,provisional_axp_evaluations,final_axp_rows,test_rows,theorem_certified,language_family,backend,path_theory_state,path_backend,path_certified,git_sha,config,method_key,method_label,category,acc,acc_std,size,expl,axp_valid_rate,axp_minimal_rate,n_success,n_fail,axp_backend,path_certificate,rejected_reason,theorem_mode_used,random_state,n_runs,train_test_split_protocol,search_strategy,score_profile,candidate_beam_width,tree_beam_width,lookahead_depth,node_budget,pruning_enabled,nodes_before_prune,nodes_after_prune,leaves_before_prune,leaves_after_prune,literals_before_prune,literals_after_prune,validation_accuracy_before_prune,validation_accuracy_after_prune,validation_balanced_accuracy_before_prune,validation_balanced_accuracy_after_prune,validation_sensitivity_before_prune,validation_sensitivity_after_prune,validation_specificity_before_prune,validation_specificity_after_prune,validation_macro_f1_before_prune,validation_macro_f1_after_prune,validation_minority_recall_before_prune,validation_minority_recall_after_prune,validation_class_support,pruning_root_reason,pruning_reason_counts,candidate_count,candidate_pruned_count,branch_and_bound_fallback_count,nodes_using_greedy_selection,nodes_using_selective_lookahead,branch_and_bound_activation_count,branch_and_bound_avoided_count,cache_activation_count,estimated_work_saved,predicate_mask_cache_hits,predicate_mask_cache_misses,candidate_cache_hits,candidate_cache_misses,subtree_cache_hits,subtree_cache_misses,parallel_threads,compatible_family_count,selected_family_counts,root_language,path_violation_count,max_axp_length,total_fit_time,search_time,pruning_time,axp_rerank_time,empirical_fallback_used,incompatible_cached_subtree_reused,all_predicates_backend_allowed,theorem_rejection_reason\n");
     for r in rows {
         let category = if theorem_table_filter(r) {
             "certified"
@@ -1049,10 +1225,14 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.run.to_string(),
             r.depth.to_string(),
             r.method.clone(),
+            r.optimizer_profile.clone(),
+            csv_escape(&r.allowed_language_set),
+            r.ablation_variant.clone(),
             r.accuracy.to_string(),
             r.train_time.to_string(),
             r.predict_time.to_string(),
             r.tree_nodes.to_string(),
+            r.literals_after_prune.to_string(),
             r.leaves.to_string(),
             r.max_depth_reached.to_string(),
             r.mean_axp_length.to_string(),
@@ -1133,6 +1313,7 @@ fn write_csv(path: impl AsRef<Path>, rows: &[ResultRow]) -> Result<()> {
             r.parallel_threads.to_string(),
             r.compatible_family_count.to_string(),
             csv_escape(&r.selected_family_counts),
+            r.root_language.clone(),
             r.path_violation_count.to_string(),
             r.max_axp_length.to_string(),
             r.total_fit_time.to_string(),

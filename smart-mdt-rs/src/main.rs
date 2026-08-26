@@ -7,6 +7,7 @@ use smart_mdt_rs::{
         compile_verified_explanation, render_human_explanation, verified_explanation_to_json,
         ExplanationAudience,
     },
+    logic::{AllowedLanguages, LanguageFamily},
     search::{SplitScoreConfig, SplitScoreProfile},
     tree::serialize::to_json,
     tree::{learn, CalsConfig, LanguagePolicy, LearnerConfig, TreeSearchStrategy},
@@ -32,6 +33,7 @@ fn option_takes_value(option: &str) -> bool {
             | "--cals-profile"
             | "--audience"
             | "--depths"
+            | "--datasets"
             | "--method"
             | "--methods"
             | "--output"
@@ -199,6 +201,7 @@ fn validate_command_options(args: &[String]) -> Result<()> {
                     option.as_str(),
                     "--data"
                         | "--depths"
+                        | "--datasets"
                         | "--runs"
                         | "--methods"
                         | "--output"
@@ -251,8 +254,8 @@ fn validate_command_options(args: &[String]) -> Result<()> {
             .skip(2)
             .filter(|value| is_cals_tuning_option(value))
         {
-            let accepted = method == "cals"
-                || (method == "cals_compact_explain" && option != "--cals-profile");
+            let accepted = is_cals_method(&method)
+                || (is_compact_explain_method(&method) && option != "--cals-profile");
             if !accepted {
                 return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
                     "{option} requires --method cals or cals_compact_explain"
@@ -263,10 +266,7 @@ fn validate_command_options(args: &[String]) -> Result<()> {
 
     if command == "benchmark" && !benchmark_is_quick {
         let methods = arg(args, "--methods").unwrap_or_default();
-        let has_cals_method = methods
-            .split(',')
-            .map(str::trim)
-            .any(|method| matches!(method, "cals" | "cals_compact_explain"));
+        let has_cals_method = methods.split(',').map(str::trim).any(is_optimizer_method);
         for option in args
             .iter()
             .skip(2)
@@ -307,6 +307,7 @@ fn validate_cli_args(args: &[String]) -> Result<()> {
         "--cals-profile",
         "--audience",
         "--depths",
+        "--datasets",
         "--method",
         "--methods",
         "--output",
@@ -405,6 +406,13 @@ fn validate_cli_args(args: &[String]) -> Result<()> {
             )));
         }
     }
+    if let Some(datasets) = arg(args, "--datasets") {
+        if datasets.split(',').any(|dataset| dataset.trim().is_empty()) {
+            return Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
+                "--datasets requires a comma-separated dataset list, got {datasets}"
+            )));
+        }
+    }
     if let Some(value) = arg(args, "--tree-search") {
         if !matches!(
             value.as_str(),
@@ -462,12 +470,61 @@ fn policy(s: &str) -> Result<LanguagePolicy> {
         "square2cnf" => Ok(LanguagePolicy::Square2CnfOnly),
         "affine" => Ok(LanguagePolicy::AffineOnly),
         "smart_certified" => Ok(LanguagePolicy::SmartCertified),
-        "cals" | "cals_compact_explain" => Ok(LanguagePolicy::SmartCertified),
+        "cals"
+        | "cals_unary"
+        | "cals_horn"
+        | "cals_antihorn"
+        | "cals_square2cnf"
+        | "cals_affine"
+        | "cals_compact_explain"
+        | "cals_compact_explain_unary"
+        | "cals_compact_explain_horn"
+        | "cals_compact_explain_antihorn"
+        | "cals_compact_explain_square2cnf"
+        | "cals_compact_explain_affine" => Ok(LanguagePolicy::SmartCertified),
         "best-certified" => Ok(LanguagePolicy::BestCertifiedPerNode),
         _ => Err(smart_mdt_rs::SmartMdtError::InvalidInput(format!(
             "unknown method {s}"
         ))),
     }
+}
+
+fn restricted_family(method: &str) -> Option<LanguageFamily> {
+    match method {
+        "cals_unary" | "cals_compact_explain_unary" => Some(LanguageFamily::Unary),
+        "cals_horn" | "cals_compact_explain_horn" => Some(LanguageFamily::Horn),
+        "cals_antihorn" | "cals_compact_explain_antihorn" => Some(LanguageFamily::AntiHorn),
+        "cals_square2cnf" | "cals_compact_explain_square2cnf" => Some(LanguageFamily::Square2Cnf),
+        "cals_affine" | "cals_compact_explain_affine" => Some(LanguageFamily::Affine),
+        _ => None,
+    }
+}
+
+fn allowed_languages(method: &str) -> AllowedLanguages {
+    restricted_family(method).map_or_else(AllowedLanguages::all, AllowedLanguages::only)
+}
+
+fn is_cals_method(method: &str) -> bool {
+    matches!(
+        method,
+        "cals" | "cals_unary" | "cals_horn" | "cals_antihorn" | "cals_square2cnf" | "cals_affine"
+    )
+}
+
+fn is_compact_explain_method(method: &str) -> bool {
+    matches!(
+        method,
+        "cals_compact_explain"
+            | "cals_compact_explain_unary"
+            | "cals_compact_explain_horn"
+            | "cals_compact_explain_antihorn"
+            | "cals_compact_explain_square2cnf"
+            | "cals_compact_explain_affine"
+    )
+}
+
+fn is_optimizer_method(method: &str) -> bool {
+    is_cals_method(method) || is_compact_explain_method(method)
 }
 
 fn apply_cals_args(args: &[String], mut config: CalsConfig) -> CalsConfig {
@@ -650,10 +707,14 @@ fn main() -> Result<()> {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(5);
             let ds = Dataset::from_dl8_like(data)?;
-            let cfg = if method == "cals_compact_explain" {
-                compact_explain_config(&args).learner_config(max_depth, 42)
-            } else if method == "cals" {
-                cals_config(&args).learner_config(max_depth, 42)
+            let cfg = if is_compact_explain_method(&method) {
+                compact_explain_config(&args)
+                    .with_allowed_languages(allowed_languages(&method))
+                    .learner_config(max_depth, 42)
+            } else if is_cals_method(&method) {
+                cals_config(&args)
+                    .with_allowed_languages(allowed_languages(&method))
+                    .learner_config(max_depth, 42)
             } else {
                 LearnerConfig {
                     max_depth,
@@ -693,6 +754,9 @@ fn main() -> Result<()> {
                             "square2cnf".into(),
                         ]
                     });
+                let datasets = arg(&args, "--datasets")
+                    .map(|s| parse_method_list(&s))
+                    .unwrap_or_default();
                 let seed = arg(&args, "--seed")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(42);
@@ -701,6 +765,7 @@ fn main() -> Result<()> {
                     depths,
                     runs,
                     methods,
+                    datasets,
                     output,
                     seed,
                     strict_data_checks: has_flag(&args, "--strict-data-checks"),
@@ -770,10 +835,14 @@ fn main() -> Result<()> {
                 arg(&args, "--output").unwrap_or_else(|| "verified_explanation".into()),
             );
             let dataset = Dataset::from_dl8_like(data)?;
-            let config = if method == "cals_compact_explain" {
-                compact_explain_config(&args).learner_config(max_depth, 42)
-            } else if method == "cals" {
-                cals_config(&args).learner_config(max_depth, 42)
+            let config = if is_compact_explain_method(&method) {
+                compact_explain_config(&args)
+                    .with_allowed_languages(allowed_languages(&method))
+                    .learner_config(max_depth, 42)
+            } else if is_cals_method(&method) {
+                cals_config(&args)
+                    .with_allowed_languages(allowed_languages(&method))
+                    .learner_config(max_depth, 42)
             } else {
                 LearnerConfig {
                     max_depth,

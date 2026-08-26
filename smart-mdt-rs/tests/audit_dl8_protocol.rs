@@ -70,6 +70,7 @@ fn inverse_label_feature_is_detected_and_rejected_by_strict_checks() {
         depths: vec![1],
         runs: 1,
         methods: vec!["unary".into()],
+        datasets: Vec::new(),
         output: root.join("results"),
         seed: 42,
         strict_data_checks: true,
