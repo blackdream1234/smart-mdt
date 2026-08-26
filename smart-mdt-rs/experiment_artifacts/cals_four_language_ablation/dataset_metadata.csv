@@ -1,0 +1,6 @@
+dataset,path,n_samples,n_columns_original,n_features_original,n_features_after_constant_removal,raw_label_unique_count,raw_label_counts,binarized_label_counts,positive_rate,majority_class_rate,removed_constant_columns_count,is_binary_features,skipped,skip_reason,label_column_used,label_excluded_from_features,feature_equal_to_label_count,feature_equal_to_label_indices,suspicious_majority_rate,suspicious_feature_label_leakage
+"HTRU_2-bin","../data/HTRU_2-bin.dl8",17898,71,70,70,2,"0:16259;1:1639","0:16259;1:1639",0.09157447759526204,0.908425522404738,0,true,false,"",0,true,0,"",false,false
+"anneal","../data/anneal.dl8",812,94,93,88,2,"0:187;1:625","0:187;1:625",0.7697044334975369,0.7697044334975369,5,true,false,"",0,true,0,"",false,false
+"balance-scale-bin","../data/balance-scale-bin.dl8",625,17,16,16,2,"0:49;1:576","0:49;1:576",0.9216,0.9216,0,true,false,"",0,true,0,"",false,false
+"car_evaluation-bin","../data/car_evaluation-bin.dl8",1728,15,14,14,2,"0:1210;1:518","0:1210;1:518",0.29976851851851855,0.7002314814814814,0,true,false,"",0,true,0,"",false,false
+"tic-tac-toe","../data/tic-tac-toe.dl8",958,28,27,27,2,"0:332;1:626","0:332;1:626",0.6534446764091858,0.6534446764091858,0,true,false,"",0,true,0,"",false,false
